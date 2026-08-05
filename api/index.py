@@ -19,6 +19,7 @@ import traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
 
 # Vercel's Python runtime imports this file via importlib.util rather than
 # running it as a script, so — unlike `python index.py` — this file's own
@@ -53,6 +54,23 @@ for env_key, cfg_key in (('ODOO_URL', 'url'), ('ODOO_DB', 'db'),
 # "Refresh from Odoo" button in the UI is throttled instead (see MIN_SYNC_GAP).
 CRON_SECRET = os.environ.get('CRON_SECRET', '')
 MIN_SYNC_GAP_SECONDS = 120
+
+# Vercel Functions run in UTC. "Today" has to mean the business's calendar day
+# (both companies are Saudi Arabia-registered in Odoo, and most Odoo users
+# there are set to Asia/Riyadh), not the server's — otherwise "collected as of
+# today" and every overdue-age calculation quietly disagree with Odoo for the
+# few hours a day UTC's date has rolled over but Riyadh's hasn't yet, or vice
+# versa. Every place that previously read datetime.now() for a calendar date
+# reads business_today()/business_now() instead.
+BUSINESS_TZ = ZoneInfo(CONFIG.get('timezone', 'Asia/Riyadh'))
+
+
+def business_now():
+    return datetime.now(BUSINESS_TZ)
+
+
+def business_today():
+    return business_now().date()
 
 
 # --------------------------------------------------------------------------- helpers
@@ -131,7 +149,7 @@ def filter_customers(customers, params):
     due_only = params.get('due_only') == '1'
     overdue_only = params.get('overdue_only') == '1'
     over_limit = params.get('over_limit') == '1'
-    today = datetime.now().date().isoformat()
+    today = business_today().isoformat()
 
     out = []
     for c in customers:
@@ -231,7 +249,7 @@ def status_summary(customers):
 
 def attention_items(customers):
     """Promises that have come and gone, and follow-ups that are due."""
-    today = datetime.now().date().isoformat()
+    today = business_today().isoformat()
     broken, due = [], []
     for c in customers:
         if c['promise_date'] and c['promise_date'] < today and c['status'] == 'promised':
@@ -387,7 +405,7 @@ class handler(BaseHTTPRequestHandler):
                 'has_data': db.has_data(conn),
                 'last_sync': dict(last) if last else None,
                 'owner': db.get_setting(conn, 'owner', ''),
-                'today': datetime.now().date().isoformat(),
+                'today': business_today().isoformat(),
                 'has_collections': collections_data.has_data(conn),
             }
         finally:
@@ -400,7 +418,7 @@ class handler(BaseHTTPRequestHandler):
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
             company = company_of(params, conn)
-            everything, totals = aging.build(conn, threshold, scope=scope,
+            everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
                                              area=params.get('area') or None)
         finally:
@@ -435,7 +453,7 @@ class handler(BaseHTTPRequestHandler):
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
-            everything, _ = aging.build(conn, threshold, scope=scope,
+            everything, _ = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                         company_id=company_of(params, conn),
                                         area=params.get('area') or None)
             customer = next((c for c in everything if c['partner_id'] == partner_id), None)
@@ -633,7 +651,7 @@ class handler(BaseHTTPRequestHandler):
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
             company = company_of(params, conn)
-            everything, totals = aging.build(conn, threshold, scope=scope,
+            everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
                                              area=params.get('area') or None)
             filtered = filter_customers(everything, params)

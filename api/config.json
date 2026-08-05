@@ -8,6 +8,7 @@
   "default_threshold_days": 270,
   "default_scope": "all",
   "currency": "SAR",
+  "timezone": "Asia/Riyadh",
   "port": 5050,
   "collections_from_invoice_date": "2026-01-01",
   "company_ids": [
