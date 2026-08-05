@@ -229,7 +229,14 @@ main { padding: 22px 24px 60px; max-width: 1680px; margin: 0 auto; }
 .check input { accent-color: var(--accent); }
 
 /* ---------- table ---------- */
-.table-scroll { overflow-x: auto; max-height: calc(100vh - 400px); overflow-y: auto; }
+/* Draggable via the native resize handle in the bottom-right corner — height
+   is capped by max-height so dragging can't push the table past the viewport,
+   and the chosen height is remembered between visits (see applyTableHeight in
+   app.js). */
+.table-scroll {
+  overflow: auto; resize: vertical;
+  height: calc(100vh - 400px); min-height: 220px; max-height: 85vh;
+}
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 thead th {
   position: sticky; top: 0; z-index: 2;
@@ -375,7 +382,7 @@ tfoot td.left { text-align: left; }
 @media (max-width: 720px) {
   .topbar { padding: 12px 14px; }
   main { padding: 16px 14px 50px; }
-  .table-scroll { max-height: none; }
+  .table-scroll { resize: none; height: auto; max-height: none; }
 }
 
 

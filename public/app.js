@@ -719,8 +719,20 @@ function initTheme() {
   });
 }
 
+function initTableResize() {
+  const el = $('table-scroll');
+  const saved = Number(localStorage.getItem('tableHeight'));
+  if (saved) el.style.height = `${saved}px`;
+  // The drag handle itself is native (CSS `resize: vertical`) — this just
+  // remembers whatever height the user drags it to, across reloads and tabs.
+  new ResizeObserver(debounce(() => {
+    localStorage.setItem('tableHeight', Math.round(el.getBoundingClientRect().height));
+  }, 300)).observe(el);
+}
+
 function init() {
   initTheme();
+  initTableResize();
   $('btn-sync').addEventListener('click', startSync);
   $('threshold').addEventListener('change', saveThreshold);
   $('drawer-close').addEventListener('click', closeDrawer);
