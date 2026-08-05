@@ -1,0 +1,11 @@
+{
+  "rewrites": [
+    { "source": "/api/:rest*", "destination": "/api/index?__path=/api/:rest*" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "maxDuration": 60,
+      "includeFiles": "api/**"
+    }
+  }
+}

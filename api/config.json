@@ -1,0 +1,20 @@
+{
+  "odoo": {
+    "url": "https://derma-city.odoo.com",
+    "db": "zad-solutions-derma-city-main-23553142",
+    "username": "",
+    "password": ""
+  },
+  "default_threshold_days": 270,
+  "default_scope": "all",
+  "currency": "SAR",
+  "port": 5050,
+  "collections_from_invoice_date": "2026-01-01",
+  "company_ids": [
+    1
+  ],
+  "company_labels": {
+    "1": "Derma City"
+  },
+  "app_label": "Derma City — Receivables & Collections"
+}

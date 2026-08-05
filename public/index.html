@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Derma City — Overdue Receivables</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <div>
+      <h1 id="company">Derma City</h1>
+      <p class="sub" id="subtitle">Overdue receivables tracker</p>
+    </div>
+  </div>
+
+  <div class="topbar-actions">
+    <div class="segmented companysw" id="company-switch" role="group" aria-label="Company"></div>
+    <div class="segmented" id="scope-switch" role="group" aria-label="What to show">
+      <button type="button" data-scope="all" class="seg active">All open</button>
+      <button type="button" data-scope="aged" class="seg">Overdue only</button>
+    </div>
+    <label class="threshold hidden" id="threshold-wrap">
+      by
+      <input type="number" id="threshold" min="0" step="30" value="270">
+      days or more
+    </label>
+    <button id="btn-sync" class="btn">Refresh from Odoo</button>
+    <a id="btn-export" class="btn btn-ghost" href="/api/export.xlsx">Export Excel</a>
+    <button id="btn-theme" class="btn btn-icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+
+<div id="sync-banner" class="banner hidden"></div>
+
+<nav class="viewtabs" id="viewtabs">
+  <button class="vtab active" data-view="receivables">Receivables</button>
+  <button class="vtab" data-view="collections">Collections</button>
+</nav>
+
+<main id="view-receivables">
+  <section class="kpis" id="kpis"></section>
+
+  <section class="aging-strip" id="aging-strip"></section>
+
+  <section class="attention hidden" id="attention"></section>
+
+  <section class="panel">
+    <div class="filters">
+      <input type="search" id="f-search" placeholder="Search customer or phone…" class="grow">
+      <select id="f-status"><option value="">All statuses</option></select>
+      <select id="f-band"><option value="">All age bands</option></select>
+      <select id="f-area"><option value="">All areas</option></select>
+      <select id="f-agency" title="Customers handed to a collection agency — still owed, but not yours to chase">
+        <option value="">Including agency customers</option>
+        <option value="hide">Excluding agency customers</option>
+        <option value="only">Agency customers only</option>
+      </select>
+      <select id="f-term"><option value="">All credit terms</option></select>
+      <input type="number" id="f-min" placeholder="Min amount" step="1000">
+      <input type="text" id="f-owner" placeholder="Owner">
+      <label class="check"><input type="checkbox" id="f-overdue"> Has overdue</label>
+      <label class="check" title="Customers whose whole balance nets to zero — an old invoice cancelled by an unapplied credit. Nothing to collect.">
+        <input type="checkbox" id="f-hide-settled" checked> Hide settled</label>
+      <label class="check"><input type="checkbox" id="f-hide-credits"> Hide credits &amp; zero</label>
+      <label class="check"><input type="checkbox" id="f-due"> Needs action</label>
+      <button id="f-reset" class="btn btn-ghost btn-sm">Reset</button>
+    </div>
+
+    <div class="table-scroll">
+      <table id="table">
+        <thead id="thead"></thead>
+        <tbody id="tbody"></tbody>
+        <tfoot id="tfoot"></tfoot>
+      </table>
+    </div>
+    <p class="empty hidden" id="empty">No customers match these filters.</p>
+  </section>
+</main>
+
+<main id="view-collections" class="hidden">
+  <section class="filters panel-flat" id="c-filters">
+    <div class="segmented" id="c-presets" role="group" aria-label="Date range">
+      <button type="button" class="seg" data-range="today">Today</button>
+      <button type="button" class="seg" data-range="week">7 days</button>
+      <button type="button" class="seg" data-range="mtd">This month</button>
+      <button type="button" class="seg" data-range="ytd">YTD</button>
+      <button type="button" class="seg active" data-range="all">All</button>
+    </div>
+    <label class="daterange">
+      <input type="date" id="c-from" aria-label="From">
+      <span>→</span>
+      <input type="date" id="c-to" aria-label="To">
+    </label>
+    <input type="search" id="c-q" placeholder="Search customer, receipt, invoice…" class="grow">
+    <select id="c-user"><option value="">All salespeople</option></select>
+    <select id="c-area"><option value="">All areas</option></select>
+    <select id="c-agency" title="Customers handed to a collection agency">
+      <option value="">Including agency customers</option>
+      <option value="hide">Excluding agency customers</option>
+      <option value="only">Agency customers only</option>
+    </select>
+    <select id="c-journal"><option value="">All bank / cash</option></select>
+    <select id="c-basis" title="All receipts is the true cash figure. The other two split it by what the money settled.">
+      <option value="">All receipts — total cash</option>
+      <option value="real">Only settling 2026 invoices</option>
+      <option value="opening">Only settling opening balances</option>
+    </select>
+    <select id="c-applied">
+      <option value="">Applied &amp; unapplied</option>
+      <option value="only">Applied to invoices</option>
+      <option value="unapplied">Unapplied only</option>
+    </select>
+    <a id="c-export" class="btn btn-ghost btn-sm" href="/api/collections/export.xlsx">Export Excel</a>
+    <button id="c-reset" class="btn btn-ghost btn-sm">Reset</button>
+  </section>
+
+  <section class="kpis" id="c-kpis"></section>
+  <section id="c-body"></section>
+</main>
+
+<aside id="drawer" class="drawer" aria-hidden="true">
+  <div class="drawer-inner">
+    <button class="drawer-close" id="drawer-close" aria-label="Close">✕</button>
+    <div id="drawer-body"></div>
+  </div>
+</aside>
+<div id="scrim" class="scrim" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

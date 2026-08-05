@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+tracker.db
+tracker.db-journal
+tracker.db-wal
+tracker.db-shm
+.env
+.env.local
+.vercel
+.DS_Store
+
+.vercel
+.env*

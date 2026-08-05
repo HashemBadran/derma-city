@@ -1,0 +1,41 @@
+name: Sync from Odoo
+
+# Vercel's free Hobby plan only allows a cron job once a day, which isn't
+# frequent enough here — so the schedule lives in GitHub Actions instead (free)
+# and just calls the deployed sync endpoint on a real interval.
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /api/sync
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          # Secrets pasted through a browser sometimes pick up a trailing
+          # newline or carriage return, which turns a URL into something curl
+          # rejects outright (exit 3, "malformed URL") with no useful message.
+          # Stripping whitespace here means a slightly messy paste doesn't
+          # silently break the scheduled sync.
+          clean_url=$(printf '%s' "$APP_URL" | tr -d '\n\r' | sed 's:/*$::')
+          clean_secret=$(printf '%s' "$CRON_SECRET" | tr -d '\n\r')
+
+          echo "Target: ${clean_url}/api/sync (length ${#clean_url})"
+          if [ -z "$clean_url" ]; then
+            echo "APP_URL secret is empty or not set — check repo Settings > Secrets and variables > Actions"
+            exit 1
+          fi
+
+          status=$(curl -sS -o response.json -w '%{http_code}' -X POST \
+            "${clean_url}/api/sync" \
+            -H "X-Cron-Secret: ${clean_secret}")
+          echo "HTTP $status"
+          cat response.json
+          if [ "$status" -ge 300 ]; then
+            exit 1
+          fi
