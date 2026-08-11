@@ -117,11 +117,32 @@ def sync(config, progress=None):
 
     partner_ids = sorted({l['partner_id'][0] for l in lines if l['partner_id']})
     partners = []
+    restricted_partner_ids = []
     for i in range(0, len(partner_ids), 300):
-        partners.extend(odoo.call(
-            'res.partner', 'read', [partner_ids[i:i + 300]],
-            {'fields': PARTNER_FIELDS}, context=context,
-        ))
+        chunk = partner_ids[i:i + 300]
+        try:
+            partners.extend(odoo.call(
+                'res.partner', 'read', [chunk],
+                {'fields': PARTNER_FIELDS}, context=context,
+            ))
+        except xmlrpc.client.Fault:
+            # Odoo's `read` has no partial-success mode: one contact the sync
+            # user can't see (typically a multi-company access rule) faults the
+            # whole batch. Fall back to one-at-a-time so a single bad record
+            # can't take the entire sync down with it.
+            for pid in chunk:
+                try:
+                    partners.extend(odoo.call(
+                        'res.partner', 'read', [[pid]],
+                        {'fields': PARTNER_FIELDS}, context=context,
+                    ))
+                except xmlrpc.client.Fault as exc:
+                    restricted_partner_ids.append(pid)
+                    say(f'  Skipped partner {pid}: no read access ({exc})')
+    if restricted_partner_ids:
+        say(f'{len(restricted_partner_ids)} contact(s) skipped for access reasons: '
+            f'{restricted_partner_ids} — their receivable lines are still synced under a '
+            f'placeholder name, but grant the sync user read access to fix the name/details.')
 
     collection_rows = collections_data.sync(odoo, config, progress)
 
@@ -147,6 +168,14 @@ def sync(config, progress=None):
                     (p['region_id'][1] if p.get('region_id') else UNASSIGNED_AREA),
                     term_label, term_days(term_label),
                     p.get('credit_limit') or 0.0,
+                ))
+            # Placeholder rows for contacts the sync user can't read, so the
+            # aging JOIN (customers JOIN documents) still picks up their open
+            # balances instead of silently dropping that money from the totals.
+            for pid in restricted_partner_ids:
+                rows.append((
+                    pid, f'(access restricted — contact #{pid})', '', '', '', '',
+                    '', '', UNASSIGNED_AREA, '', None, 0.0,
                 ))
             conn.executemany(
                 'INSERT INTO customers (partner_id, name, phone, mobile, email, vat,'
@@ -200,5 +229,6 @@ def sync(config, progress=None):
         'total_open': residual,
         'collection_rows': len(collection_rows),
         'collected': round(sum(r['amount'] for r in collection_rows), 2),
+        'restricted_partners': len(restricted_partner_ids),
         'server_version': version.get('server_version'),
     }
