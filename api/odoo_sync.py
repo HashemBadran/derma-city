@@ -73,6 +73,30 @@ class Odoo:
         )
 
 
+def _read_or_bisect(odoo, model, ids, fields, context, say, failed):
+    """Read a chunk; on fault, binary-search it to isolate the bad id(s).
+
+    A single record the sync user can't see (typically a multi-company access
+    rule) faults Odoo's *whole* batch response, with no way to tell which id
+    was the culprit. Retrying one-at-a-time would isolate it but costs up to
+    len(ids) extra round trips; bisecting costs only ~log2(len(ids)), which is
+    the difference between a few seconds and blowing the serverless function's
+    time budget when a 300-id batch has one bad apple in it.
+    """
+    if not ids:
+        return []
+    try:
+        return odoo.call(model, 'read', [ids], {'fields': fields}, context=context)
+    except xmlrpc.client.Fault as exc:
+        if len(ids) == 1:
+            failed.append(ids[0])
+            say(f'  Skipped {model} {ids[0]}: no read access ({exc})')
+            return []
+        mid = len(ids) // 2
+        return (_read_or_bisect(odoo, model, ids[:mid], fields, context, say, failed)
+                + _read_or_bisect(odoo, model, ids[mid:], fields, context, say, failed))
+
+
 def _fetch_all(odoo, model, domain, fields, context, page=500):
     """search_read in pages — the receivable ledger is well past a single-call limit."""
     total = odoo.call(model, 'search_count', [domain], context=context)
@@ -119,26 +143,10 @@ def sync(config, progress=None):
     partners = []
     restricted_partner_ids = []
     for i in range(0, len(partner_ids), 300):
-        chunk = partner_ids[i:i + 300]
-        try:
-            partners.extend(odoo.call(
-                'res.partner', 'read', [chunk],
-                {'fields': PARTNER_FIELDS}, context=context,
-            ))
-        except xmlrpc.client.Fault:
-            # Odoo's `read` has no partial-success mode: one contact the sync
-            # user can't see (typically a multi-company access rule) faults the
-            # whole batch. Fall back to one-at-a-time so a single bad record
-            # can't take the entire sync down with it.
-            for pid in chunk:
-                try:
-                    partners.extend(odoo.call(
-                        'res.partner', 'read', [[pid]],
-                        {'fields': PARTNER_FIELDS}, context=context,
-                    ))
-                except xmlrpc.client.Fault as exc:
-                    restricted_partner_ids.append(pid)
-                    say(f'  Skipped partner {pid}: no read access ({exc})')
+        partners.extend(_read_or_bisect(
+            odoo, 'res.partner', partner_ids[i:i + 300], PARTNER_FIELDS, context,
+            say, restricted_partner_ids,
+        ))
     if restricted_partner_ids:
         say(f'{len(restricted_partner_ids)} contact(s) skipped for access reasons: '
             f'{restricted_partner_ids} — their receivable lines are still synced under a '

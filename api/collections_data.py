@@ -32,25 +32,37 @@ def clean(value):
     return re.sub(r'[\x00-\x1f\x7f]+', ' ', str(value or '')).strip()
 
 
+def _read_or_bisect(odoo, model, ids, fields, context, say):
+    """Read a chunk; on fault, binary-search it to isolate the bad id(s).
+
+    A single record the sync user can't see (typically a multi-company access
+    rule) faults Odoo's *whole* batch response, with no way to tell which id
+    was the culprit. Retrying one-at-a-time would isolate it but costs up to
+    len(ids) extra round trips; bisecting costs only ~log2(len(ids)), which is
+    the difference between a few seconds and blowing the serverless function's
+    time budget when a 300-id batch has one bad apple in it.
+    """
+    if not ids:
+        return []
+    try:
+        return odoo.call(model, 'read', [ids], {'fields': fields}, context=context)
+    except xmlrpc.client.Fault as exc:
+        if len(ids) == 1:
+            if say:
+                say(f'  Skipped {model} {ids[0]}: no read access ({exc})')
+            return []
+        mid = len(ids) // 2
+        return (_read_or_bisect(odoo, model, ids[:mid], fields, context, say)
+                + _read_or_bisect(odoo, model, ids[mid:], fields, context, say))
+
+
 def _safe_read(odoo, model, ids, fields, context, page=300, say=None):
-    """Batched `read` that degrades gracefully. A single record the sync user
-    can't see (typically a multi-company access rule) faults Odoo's *whole*
-    batch response — retry that batch one id at a time and skip only the
-    specific record(s) that still fail, instead of losing everything and
-    failing the entire sync over one inaccessible row.
+    """Batched `read` that degrades gracefully instead of failing the whole
+    sync over one inaccessible record — see _read_or_bisect().
     """
     out = []
     for i in range(0, len(ids), page):
-        chunk = ids[i:i + page]
-        try:
-            out.extend(odoo.call(model, 'read', [chunk], {'fields': fields}, context=context))
-        except xmlrpc.client.Fault:
-            for rid in chunk:
-                try:
-                    out.extend(odoo.call(model, 'read', [[rid]], {'fields': fields}, context=context))
-                except xmlrpc.client.Fault as exc:
-                    if say:
-                        say(f'  Skipped {model} {rid}: no read access ({exc})')
+        out.extend(_read_or_bisect(odoo, model, ids[i:i + page], fields, context, say))
     return out
 
 
