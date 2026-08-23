@@ -4,8 +4,11 @@ name: Sync from Odoo
 # frequent enough here — so the schedule lives in GitHub Actions instead (free)
 # and just calls the deployed sync endpoint on a real interval.
 on:
-  schedule:
-    - cron: '*/20 * * * *'
+  # Scheduled sync disabled for now — data is refreshed on demand via the
+  # "Refresh from Odoo" button in the app (POST /api/sync), which this
+  # workflow_dispatch trigger can also still run manually if needed.
+  # schedule:
+  #   - cron: '*/20 * * * *'
   workflow_dispatch: {}
 
 jobs:
