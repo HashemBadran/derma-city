@@ -109,6 +109,10 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         where.append('c.area = ?')
         params.append(area)
     company_sql = (' WHERE ' + ' AND '.join(where)) if where else ''
+    # Agency flag and note stats used to be three separate round trips
+    # (agency, note count, last note) on top of this one — folded into the
+    # main query as LEFT JOINs instead, since each was keyed on partner_id
+    # already. One Turso round trip instead of four.
     rows = conn.execute(
         'SELECT c.partner_id, c.name, c.phone, c.mobile, c.email, c.city,'
         '       c.payment_term, c.term_days, c.credit_limit, c.area,'
@@ -116,24 +120,19 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         '       d.line_id, d.doc, d.ref, d.journal, d.inv_date, d.due_date,'
         '       d.original, d.residual,'
         '       f.status, f.owner, f.promise_date, f.promise_amount,'
-        '       f.next_action_date, f.updated_at'
+        '       f.next_action_date, f.updated_at,'
+        '       (ag.partner_id IS NOT NULL) AS is_agency,'
+        '       nt.note_count, nt.last_note_at'
         '  FROM customers c'
         '  JOIN documents d ON d.partner_id = c.partner_id'
         '  LEFT JOIN followups f ON f.partner_id = c.partner_id'
+        '  LEFT JOIN agency ag ON ag.partner_id = c.partner_id'
+        '  LEFT JOIN (SELECT partner_id, COUNT(*) AS note_count,'
+        '                    MAX(created_at) AS last_note_at'
+        '               FROM notes GROUP BY partner_id) nt'
+        '         ON nt.partner_id = c.partner_id'
         + company_sql, params
     ).fetchall()
-
-    agency_ids = {r['partner_id'] for r in conn.execute('SELECT partner_id FROM agency')}
-    note_counts = {
-        r['partner_id']: r['n'] for r in conn.execute(
-            'SELECT partner_id, COUNT(*) AS n FROM notes GROUP BY partner_id'
-        )
-    }
-    last_notes = {
-        r['partner_id']: r['created_at'] for r in conn.execute(
-            'SELECT partner_id, MAX(created_at) AS created_at FROM notes GROUP BY partner_id'
-        )
-    }
 
     customers = {}
     for r in rows:
@@ -149,7 +148,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
                 'company': r['company'] or '',
                 'company_id': r['company_id'] or 0,
                 'area': r['area'] or 'unassigned',
-                'agency': pid in agency_ids,
+                'agency': bool(r['is_agency']),
                 'payment_term': r['payment_term'] or '',
                 'term_days': r['term_days'],
                 'credit_limit': r['credit_limit'] or 0.0,
@@ -159,8 +158,8 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
                 'promise_amount': r['promise_amount'] or 0,
                 'next_action_date': r['next_action_date'] or '',
                 'updated_at': r['updated_at'] or '',
-                'notes': note_counts.get(pid, 0),
-                'last_note_at': last_notes.get(pid, ''),
+                'notes': r['note_count'] or 0,
+                'last_note_at': r['last_note_at'] or '',
                 'buckets': [0.0] * len(bands),
                 'aged_total': 0.0,      # total of whatever this scope includes
                 'overdue_total': 0.0,   # strictly past due, whatever the scope
