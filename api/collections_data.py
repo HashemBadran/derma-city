@@ -17,6 +17,7 @@ dropped, so the rows always add up to the cash banked.
 """
 
 import re
+import xmlrpc.client
 from collections import defaultdict
 from datetime import datetime
 
@@ -29,6 +30,40 @@ NO_SALESPERSON = '(no salesperson)'
 
 def clean(value):
     return re.sub(r'[\x00-\x1f\x7f]+', ' ', str(value or '')).strip()
+
+
+def _read_or_bisect(odoo, model, ids, fields, context, say):
+    """Read a chunk; on fault, binary-search it to isolate the bad id(s).
+
+    A single record the sync user can't see (typically a multi-company access
+    rule) faults Odoo's *whole* batch response, with no way to tell which id
+    was the culprit. Retrying one-at-a-time would isolate it but costs up to
+    len(ids) extra round trips; bisecting costs only ~log2(len(ids)), which is
+    the difference between a few seconds and blowing the serverless function's
+    time budget when a 300-id batch has one bad apple in it.
+    """
+    if not ids:
+        return []
+    try:
+        return odoo.call(model, 'read', [ids], {'fields': fields}, context=context)
+    except xmlrpc.client.Fault as exc:
+        if len(ids) == 1:
+            if say:
+                say(f'  Skipped {model} {ids[0]}: no read access ({exc})')
+            return []
+        mid = len(ids) // 2
+        return (_read_or_bisect(odoo, model, ids[:mid], fields, context, say)
+                + _read_or_bisect(odoo, model, ids[mid:], fields, context, say))
+
+
+def _safe_read(odoo, model, ids, fields, context, page=300, say=None):
+    """Batched `read` that degrades gracefully instead of failing the whole
+    sync over one inaccessible record — see _read_or_bisect().
+    """
+    out = []
+    for i in range(0, len(ids), page):
+        out.extend(_read_or_bisect(odoo, model, ids[i:i + page], fields, context, say))
+    return out
 
 
 def collection_journal_ids(odoo, company_ids, context):
@@ -85,11 +120,9 @@ def sync(odoo, config, progress=None):
     # the receivables partner list is not enough — look them up directly.
     payer_ids = sorted({l['partner_id'][0] for l in lines if l['partner_id']})
     areas = {}
-    for i in range(0, len(payer_ids), 300):
-        for pt in odoo.call('res.partner', 'read', [payer_ids[i:i + 300]],
-                            {'fields': ['id', 'region_id']}, context=context):
-            areas[pt['id']] = (clean(pt['region_id'][1]) if pt.get('region_id')
-                               else UNASSIGNED_AREA)
+    for pt in _safe_read(odoo, 'res.partner', payer_ids, ['id', 'region_id'], context, say=say):
+        areas[pt['id']] = (clean(pt['region_id'][1]) if pt.get('region_id')
+                           else UNASSIGNED_AREA)
 
     say('Tracing receipts to the invoices they settle…')
     credit_ids = [l['id'] for l in lines]
@@ -102,20 +135,19 @@ def sync(odoo, config, progress=None):
 
     # allocation -> invoice line -> invoice -> salesperson
     debit_ids = sorted({a['debit_move_id'][0] for a in allocations})
-    debit_to_move = {}
-    for i in range(0, len(debit_ids), 300):
-        for r in odoo.call('account.move.line', 'read', [debit_ids[i:i + 300]],
-                           {'fields': ['id', 'move_id']}, context=context):
-            debit_to_move[r['id']] = r['move_id'][0] if r['move_id'] else None
+    debit_to_move = {
+        r['id']: (r['move_id'][0] if r['move_id'] else None)
+        for r in _safe_read(odoo, 'account.move.line', debit_ids, ['id', 'move_id'],
+                             context, say=say)
+    }
 
     move_ids = sorted({v for v in debit_to_move.values() if v})
-    moves = {}
-    for i in range(0, len(move_ids), 300):
-        for r in odoo.call('account.move', 'read', [move_ids[i:i + 300]],
-                           {'fields': ['id', 'name', 'invoice_date', 'invoice_user_id',
-                            'journal_id']},
-                           context=context):
-            moves[r['id']] = r
+    moves = {
+        r['id']: r
+        for r in _safe_read(odoo, 'account.move', move_ids,
+                             ['id', 'name', 'invoice_date', 'invoice_user_id', 'journal_id'],
+                             context, say=say)
+    }
 
     say('Allocating receipts to salespeople…')
     by_credit = defaultdict(list)

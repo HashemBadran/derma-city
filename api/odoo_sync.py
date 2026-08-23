@@ -73,6 +73,30 @@ class Odoo:
         )
 
 
+def _read_or_bisect(odoo, model, ids, fields, context, say, failed):
+    """Read a chunk; on fault, binary-search it to isolate the bad id(s).
+
+    A single record the sync user can't see (typically a multi-company access
+    rule) faults Odoo's *whole* batch response, with no way to tell which id
+    was the culprit. Retrying one-at-a-time would isolate it but costs up to
+    len(ids) extra round trips; bisecting costs only ~log2(len(ids)), which is
+    the difference between a few seconds and blowing the serverless function's
+    time budget when a 300-id batch has one bad apple in it.
+    """
+    if not ids:
+        return []
+    try:
+        return odoo.call(model, 'read', [ids], {'fields': fields}, context=context)
+    except xmlrpc.client.Fault as exc:
+        if len(ids) == 1:
+            failed.append(ids[0])
+            say(f'  Skipped {model} {ids[0]}: no read access ({exc})')
+            return []
+        mid = len(ids) // 2
+        return (_read_or_bisect(odoo, model, ids[:mid], fields, context, say, failed)
+                + _read_or_bisect(odoo, model, ids[mid:], fields, context, say, failed))
+
+
 def _fetch_all(odoo, model, domain, fields, context, page=500):
     """search_read in pages — the receivable ledger is well past a single-call limit."""
     total = odoo.call(model, 'search_count', [domain], context=context)
@@ -117,11 +141,16 @@ def sync(config, progress=None):
 
     partner_ids = sorted({l['partner_id'][0] for l in lines if l['partner_id']})
     partners = []
+    restricted_partner_ids = []
     for i in range(0, len(partner_ids), 300):
-        partners.extend(odoo.call(
-            'res.partner', 'read', [partner_ids[i:i + 300]],
-            {'fields': PARTNER_FIELDS}, context=context,
+        partners.extend(_read_or_bisect(
+            odoo, 'res.partner', partner_ids[i:i + 300], PARTNER_FIELDS, context,
+            say, restricted_partner_ids,
         ))
+    if restricted_partner_ids:
+        say(f'{len(restricted_partner_ids)} contact(s) skipped for access reasons: '
+            f'{restricted_partner_ids} — their receivable lines are still synced under a '
+            f'placeholder name, but grant the sync user read access to fix the name/details.')
 
     collection_rows = collections_data.sync(odoo, config, progress)
 
@@ -147,6 +176,14 @@ def sync(config, progress=None):
                     (p['region_id'][1] if p.get('region_id') else UNASSIGNED_AREA),
                     term_label, term_days(term_label),
                     p.get('credit_limit') or 0.0,
+                ))
+            # Placeholder rows for contacts the sync user can't read, so the
+            # aging JOIN (customers JOIN documents) still picks up their open
+            # balances instead of silently dropping that money from the totals.
+            for pid in restricted_partner_ids:
+                rows.append((
+                    pid, f'(access restricted — contact #{pid})', '', '', '', '',
+                    '', '', UNASSIGNED_AREA, '', None, 0.0,
                 ))
             conn.executemany(
                 'INSERT INTO customers (partner_id, name, phone, mobile, email, vat,'
@@ -200,5 +237,6 @@ def sync(config, progress=None):
         'total_open': residual,
         'collection_rows': len(collection_rows),
         'collected': round(sum(r['amount'] for r in collection_rows), 2),
+        'restricted_partners': len(restricted_partner_ids),
         'server_version': version.get('server_version'),
     }
