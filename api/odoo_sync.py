@@ -21,7 +21,7 @@ LINE_FIELDS = [
 ]
 PARTNER_FIELDS = ['id', 'name', 'phone', 'mobile', 'email', 'vat', 'street', 'city',
                   'property_payment_term_id', 'credit_limit', 'company_id',
-                  'region_id', 'user_id']
+                  'region_id']
 
 
 def term_days(label):
@@ -137,8 +137,42 @@ def sync(config, progress=None):
         ('company_id', 'in', company_ids),
     ]
     lines = _fetch_all(odoo, 'account.move.line', domain, LINE_FIELDS, context)
-    say(f'Got {len(lines)} open lines. Fetching customer details…')
+    say(f'Got {len(lines)} open lines. Fetching invoice salespeople…')
 
+    # This Odoo instance does not use res.partner.user_id (the customer-level
+    # "Salesperson" field is essentially unset) — the salesperson actually
+    # lives on each invoice instead, and it is picked per customer as the most
+    # recent open invoice's salesperson. A migrated opening balance's
+    # invoice_user_id is whoever ran the import, not a real assigned rep, so
+    # (same as collections_data.py's cutoff) an invoice dated on/after
+    # collections_from_invoice_date is preferred over an older one even if
+    # the older one is technically more recent among a tied set.
+    move_ids = sorted({l['move_id'][0] for l in lines if l.get('move_id')})
+    moves = []
+    move_failed = []
+    for i in range(0, len(move_ids), 300):
+        moves.extend(_read_or_bisect(
+            odoo, 'account.move', move_ids[i:i + 300],
+            ['id', 'invoice_user_id', 'invoice_date'], context, say, move_failed,
+        ))
+    move_by_id = {m['id']: m for m in moves}
+    cutoff = config.get('collections_from_invoice_date', '2026-01-01')
+
+    salesperson_by_partner = {}
+    for l in lines:
+        if not l.get('partner_id') or not l.get('move_id'):
+            continue
+        move = move_by_id.get(l['move_id'][0])
+        if not move or not move.get('invoice_user_id'):
+            continue
+        inv_date = move.get('invoice_date') or l['date']
+        pid = l['partner_id'][0]
+        key = (inv_date >= cutoff, inv_date)
+        current = salesperson_by_partner.get(pid)
+        if current is None or key > current[0]:
+            salesperson_by_partner[pid] = (key, move['invoice_user_id'])
+
+    say('Fetching customer details…')
     partner_ids = sorted({l['partner_id'][0] for l in lines if l['partner_id']})
     partners = []
     restricted_partner_ids = []
@@ -166,7 +200,8 @@ def sync(config, progress=None):
             for p in partners:
                 term = p.get('property_payment_term_id')
                 term_label = term[1] if term else ''
-                salesperson = p.get('user_id')
+                best = salesperson_by_partner.get(p['id'])
+                salesperson = best[1] if best else None
                 rows.append((
                     p['id'], p.get('name') or '', p.get('phone') or '',
                     p.get('mobile') or '', p.get('email') or '', p.get('vat') or '',
