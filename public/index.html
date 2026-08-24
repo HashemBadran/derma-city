@@ -121,6 +121,27 @@
 
   <section class="kpis" id="c-kpis"></section>
   <section id="c-body"></section>
+
+  <section class="card" id="c-receipts-panel">
+    <div class="card-head-row">
+      <h3 id="c-receipts-title">Receipts</h3>
+      <button class="btn btn-ghost btn-sm hidden" id="c-receipts-clear">Clear salesperson filter</button>
+    </div>
+    <div class="table-scroll">
+      <table class="docs">
+        <thead>
+          <tr>
+            <th class="left">Date</th><th class="left">Doc</th><th class="left">Customer</th>
+            <th class="left">Salesperson</th><th class="left">Area</th>
+            <th class="left">Invoice</th><th class="left">Journal</th>
+            <th>Amount</th>
+          </tr>
+        </thead>
+        <tbody id="c-receipts-body"></tbody>
+      </table>
+    </div>
+    <div class="pager" id="c-receipts-pager"></div>
+  </section>
 </main>
 
 <aside id="drawer" class="drawer" aria-hidden="true">

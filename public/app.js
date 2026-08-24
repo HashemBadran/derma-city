@@ -805,7 +805,8 @@ init();
 
 // =================================================================== collections
 
-const coll = { data: null, sort: { key: 'total', dir: -1 } };
+const coll = { data: null, sort: { key: 'total', dir: -1 }, receiptsOffset: 0 };
+const RECEIPTS_PAGE = 100;
 
 function cFilters() {
   const p = new URLSearchParams();
@@ -899,11 +900,13 @@ function cBarTable(rows, total, onClick) {
 }
 
 async function loadCollections() {
+  coll.receiptsOffset = 0;
   const p = cFilters();
   $('c-export').href = '/api/collections/export.xlsx?' + p;
   const d = await (await fetch('/api/collections?' + p)).json();
   if (d.error) { banner(d.error, true); return; }
   coll.data = d;
+  loadReceipts();
 
   const f = d.facets || {};
   if (f.salespeople && !$('c-user').dataset.filled) {
@@ -993,7 +996,8 @@ async function loadCollections() {
     el.addEventListener('mousemove', (ev) => cTip.show(el.dataset.ctip, ev));
     el.addEventListener('mouseleave', () => cTip.hide());
   });
-  // Clicking a salesperson filters the whole view to them.
+  // Clicking a salesperson filters the whole view to them, including the
+  // receipts list below — that's the point: see exactly what they collected.
   $('c-body').querySelectorAll('.card').forEach((card) => {
     if (!card.querySelector('h3').textContent.includes('salesperson')) return;
     card.querySelectorAll('tr[data-key]').forEach((tr) => {
@@ -1001,8 +1005,55 @@ async function loadCollections() {
       tr.addEventListener('click', () => {
         $('c-user').value = $('c-user').value === tr.dataset.key ? '' : tr.dataset.key;
         loadCollections();
+        $('c-receipts-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
+  });
+}
+
+async function loadReceipts() {
+  const p = cFilters();
+  p.set('limit', RECEIPTS_PAGE);
+  p.set('offset', coll.receiptsOffset);
+  const d = await (await fetch('/api/collections/receipts?' + p)).json();
+  coll.receiptsData = d;
+  renderReceipts();
+}
+
+function renderReceipts() {
+  const d = coll.receiptsData;
+  if (!d) return;
+  const salesperson = $('c-user').value;
+  $('c-receipts-title').textContent = salesperson ? `Receipts — ${salesperson}` : 'Receipts';
+  $('c-receipts-clear').classList.toggle('hidden', !salesperson);
+
+  $('c-receipts-body').innerHTML = d.rows.length ? d.rows.map((r) => `
+    <tr>
+      <td class="left">${esc(cDay(r.date))}</td>
+      <td class="left">${esc(r.doc) || '—'}</td>
+      <td class="left" dir="auto">${esc(r.customer)}</td>
+      <td class="left">${esc(r.salesperson) || '—'}</td>
+      <td class="left">${esc(r.area) || '—'}</td>
+      <td class="left">${r.invoice ? esc(r.invoice)
+        : '<span class="note-count">unapplied</span>'}</td>
+      <td class="left">${esc(r.journal)}</td>
+      <td>${fmt(r.amount)}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="8" class="left"><span class="note-count">No receipts match these filters.</span></td></tr>';
+
+  const from = d.total ? coll.receiptsOffset + 1 : 0;
+  const to = Math.min(coll.receiptsOffset + RECEIPTS_PAGE, d.total);
+  $('c-receipts-pager').innerHTML = `
+    <button class="btn btn-ghost btn-sm" id="c-receipts-prev" ${coll.receiptsOffset === 0 ? 'disabled' : ''}>← Prev</button>
+    <span>${from}–${to} of ${d.total}</span>
+    <button class="btn btn-ghost btn-sm" id="c-receipts-next" ${to >= d.total ? 'disabled' : ''}>Next →</button>`;
+  $('c-receipts-prev').addEventListener('click', () => {
+    coll.receiptsOffset = Math.max(0, coll.receiptsOffset - RECEIPTS_PAGE);
+    loadReceipts();
+  });
+  $('c-receipts-next').addEventListener('click', () => {
+    coll.receiptsOffset += RECEIPTS_PAGE;
+    loadReceipts();
   });
 }
 
@@ -1102,6 +1153,10 @@ function switchView(view) {
       }
       loadCollections();
     }));
+  $('c-receipts-clear').addEventListener('click', () => {
+    $('c-user').value = '';
+    loadCollections();
+  });
   $('c-reset').addEventListener('click', () => {
     ['c-q', 'c-user', 'c-journal', 'c-area', 'c-agency', 'c-applied']
       .forEach((id) => { $(id).value = ''; });
