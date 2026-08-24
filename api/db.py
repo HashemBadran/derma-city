@@ -127,6 +127,31 @@ CREATE INDEX IF NOT EXISTS idx_coll_user    ON collections(user_id);
 CREATE INDEX IF NOT EXISTS idx_coll_company ON collections(company_id);
 CREATE INDEX IF NOT EXISTS idx_coll_area    ON collections(area);
 
+-- A local salesperson override (followups.salesperson_override) is set per
+-- customer, not per collection row, so it has to be applied at read time
+-- rather than baked into `collections` at sync -- otherwise it would go
+-- stale the moment someone changes it until the next Odoo sync. Every read
+-- in collections_data.py goes through this view instead of the raw table so
+-- the override takes effect immediately everywhere: totals, the salesperson
+-- breakdown, and the receipts list.
+--
+-- `user_id` is cast to TEXT and, when overridden, replaced with the override
+-- string itself rather than a fixed sentinel -- grouping/filtering by a
+-- shared "overridden" placeholder would silently merge unrelated customers
+-- who happen to both have *some* override into one bucket. Using the actual
+-- override text as the key keeps two different overridden salespeople
+-- distinct, exactly like two different real Odoo users already were.
+CREATE VIEW IF NOT EXISTS collections_effective AS
+SELECT
+    c.id, c.line_id, c.company_id, c.company, c.date, c.month,
+    c.partner_id, c.customer, c.area, c.doc, c.ref, c.journal,
+    c.invoice, c.invoice_date, c.invoice_journal, c.opening,
+    COALESCE(NULLIF(f.salesperson_override, ''), CAST(c.user_id AS TEXT)) AS user_id,
+    COALESCE(NULLIF(f.salesperson_override, ''), c.salesperson) AS salesperson,
+    c.applied, c.amount
+FROM collections c
+LEFT JOIN followups f ON f.partner_id = c.partner_id;
+
 -- Customers handed to a collection agency. Local only: Odoo has no field for
 -- this and a sync must never clear it.
 CREATE TABLE IF NOT EXISTS agency (
@@ -278,7 +303,7 @@ MIGRATIONS = {
 
 # Bump whenever SCHEMA or MIGRATIONS changes, so the next cold start after a
 # deploy re-runs init() once to pick it up.
-SCHEMA_VERSION = '1'
+SCHEMA_VERSION = '2'
 
 
 def init():
@@ -302,6 +327,10 @@ def init():
         tables = [st for st in statements if 'CREATE INDEX' not in st.upper()]
         indexes = [st for st in statements if 'CREATE INDEX' in st.upper()]
 
+        # CREATE VIEW IF NOT EXISTS is a no-op against an existing view, same
+        # as CREATE TABLE — so a changed view definition needs the old one
+        # dropped first, or it would keep running the stale SQL forever.
+        conn.execute('DROP VIEW IF EXISTS collections_effective')
         for st in tables:
             conn.execute(st)
         for table, columns in MIGRATIONS.items():
