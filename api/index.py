@@ -35,6 +35,20 @@ import db
 import export
 import odoo_sync
 
+# Run at import time so most cold starts pay this cost once, up front — but
+# never let it take the whole function down. A Turso hiccup (bad token,
+# paused database, wrong URL) used to raise here, which crashes the import
+# itself and turns every route into an opaque FUNCTION_INVOCATION_FAILED
+# with no diagnostic. Deferring the failure to request time means each
+# request instead gets a real 503 explaining what's wrong, and the next
+# cold start simply retries db.init() on its own.
+DB_INIT_ERROR = None
+try:
+    db.init()
+except Exception as exc:
+    DB_INIT_ERROR = str(exc)
+    traceback.print_exc()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 
@@ -328,6 +342,8 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self._path()
         params = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        if DB_INIT_ERROR:
+            return self._error(503, f'Database unavailable: {DB_INIT_ERROR}')
         try:
             if path == '/api/bootstrap':
                 return self.api_bootstrap()
@@ -363,6 +379,8 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self._path()
+        if DB_INIT_ERROR:
+            return self._error(503, f'Database unavailable: {DB_INIT_ERROR}')
         try:
             if path == '/api/sync':
                 return self.api_sync_trigger()
@@ -381,6 +399,9 @@ class handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r'/api/customers/(\d+)/followup', path)
             if match:
                 return self.api_save_followup(int(match.group(1)))
+            match = re.fullmatch(r'/api/customers/(\d+)/salesperson', path)
+            if match:
+                return self.api_set_salesperson(int(match.group(1)))
             match = re.fullmatch(r'/api/customers/(\d+)/notes', path)
             if match:
                 return self.api_add_note(int(match.group(1)))
@@ -603,6 +624,33 @@ class handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         self._json({'followup': dict(row)})
+
+    def api_set_salesperson(self, partner_id):
+        """Local override of the Odoo-synced salesperson. An empty string clears
+        the override and reverts the customer to whatever Odoo says on the next
+        sync — Odoo itself is never written to.
+        """
+        payload = self._body()
+        override = (payload.get('salesperson') or '').strip()
+        conn = db.connect()
+        try:
+            db.ensure_followup(conn, partner_id)
+            conn.execute(
+                'UPDATE followups SET salesperson_override = ?, updated_at = ?'
+                ' WHERE partner_id = ?',
+                [override, datetime.now().isoformat(timespec='seconds'), partner_id],
+            )
+            synced = conn.execute(
+                'SELECT salesperson FROM customers WHERE partner_id = ?', [partner_id]
+            ).fetchone()
+        finally:
+            conn.close()
+        self._json({
+            'partner_id': partner_id,
+            'salesperson_override': override,
+            'salesperson_synced': (synced['salesperson'] if synced else '') or '',
+            'salesperson': override or (synced['salesperson'] if synced else '') or '',
+        })
 
     def api_add_note(self, partner_id):
         payload = self._body()

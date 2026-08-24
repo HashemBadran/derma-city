@@ -150,11 +150,12 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
     rows = conn.execute(
         'SELECT c.partner_id, c.name, c.phone, c.mobile, c.email, c.city,'
         '       c.payment_term, c.term_days, c.credit_limit, c.area,'
+        '       c.salesperson_id, c.salesperson,'
         '       d.company_id, d.company,'
         '       d.line_id, d.doc, d.ref, d.journal, d.inv_date, d.due_date,'
         '       d.original, d.residual,'
         '       f.status, f.owner, f.promise_date, f.promise_amount,'
-        '       f.next_action_date, f.updated_at,'
+        '       f.next_action_date, f.updated_at, f.salesperson_override,'
         '       (ag.partner_id IS NOT NULL) AS is_agency,'
         '       nt.note_count, nt.last_note_at'
         '  FROM customers c'
@@ -186,6 +187,13 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
                 'payment_term': r['payment_term'] or '',
                 'term_days': r['term_days'],
                 'credit_limit': r['credit_limit'] or 0.0,
+                # The salesperson synced from Odoo (res.partner.user_id) is the
+                # baseline; a local override, if set, wins for display/filtering
+                # without ever touching Odoo. Both are exposed so the UI can show
+                # "overridden from X" and offer a reset back to the synced value.
+                'salesperson_synced': r['salesperson'] or '',
+                'salesperson_override': r['salesperson_override'] or '',
+                'salesperson': r['salesperson_override'] or r['salesperson'] or '',
                 'status': r['status'] or 'new',
                 'owner': r['owner'] or '',
                 'promise_date': r['promise_date'] or '',

@@ -376,6 +376,7 @@ const COLUMNS = () => {
     { key: '_rank', label: '#', cls: 'center', sortable: false },
     { key: 'name', label: 'Customer', cls: 'left' },
     { key: 'area', label: 'Area', cls: 'center' },
+    { key: 'salesperson', label: 'Salesperson', cls: 'left' },
     { key: 'term_days', label: 'Terms', cls: 'center' },
     { key: 'aged_docs', label: 'Docs', cls: 'center' },
     { key: 'oldest_days', label: 'Oldest', cls: 'center' },
@@ -446,6 +447,9 @@ function renderTable() {
         c.settled ? '<span class="co-chip settled-chip" title="Owes nothing — an old invoice cancelled by an unapplied credit">settled</span>' : ''}${
         c.agency ? '<span class="co-chip agency-chip" title="Handed to a collection agency">agency</span>' : ''}</td>
       <td class="center term">${esc(c.area || '—')}</td>
+      <td class="left" title="${c.salesperson_override ? `Overridden — Odoo: ${esc(c.salesperson_synced) || 'none'}` : ''}">${
+        c.salesperson ? esc(c.salesperson) : '<span class="note-count">—</span>'}${
+        c.salesperson_override ? ' <span class="note-count">(override)</span>' : ''}</td>
       <td class="center term">${c.term_days != null ? c.term_days + 'd'
         : (c.payment_term ? esc(c.payment_term) : '—')}</td>
       <td class="center">${c.aged_docs}</td>
@@ -473,6 +477,7 @@ function renderTable() {
   $('tfoot').innerHTML = rows.length ? `<tr>
     <td class="left"></td>
     <td class="left">${t.customers} customers</td>
+    <td></td>
     <td></td>
     <td></td>
     <td class="center">${t.documents}</td>
@@ -552,6 +557,11 @@ function renderDrawer() {
       <div class="form-grid">
         <div class="field"><label for="d-status">Status</label>
           <select id="d-status">${statusOptions}</select></div>
+        <div class="field"><label for="d-salesperson">Salesperson${
+          c.salesperson_override ? ` <span class="note-count">(overridden — Odoo: ${
+            esc(c.salesperson_synced) || 'none'})</span>` : ''}</label>
+          <input id="d-salesperson" type="text" value="${esc(c.salesperson_override)}"
+            placeholder="${esc(c.salesperson_synced) || 'Not set in Odoo'}"></div>
         <div class="field"><label for="d-owner">Owner</label>
           <input id="d-owner" type="text" value="${esc(c.owner)}" placeholder="Who is chasing this"></div>
         <div class="field"><label for="d-promise">Promised payment date</label>
@@ -603,9 +613,20 @@ function renderDrawer() {
     </div>`;
 
   $('d-agency').addEventListener('change', async (ev) => {
-    await fetch(`/api/agency/${t.partner_id}`, {
+    await fetch(`/api/agency/${c.partner_id}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agency: ev.target.checked }),
+    });
+    await refreshDrawer();
+    load();
+  });
+  // Saves on blur (native `change` behavior for a text input), same as the
+  // agency checkbox above — no separate save button for a single field.
+  // Clearing the field back to empty is how you revert to the Odoo value.
+  $('d-salesperson').addEventListener('change', async (ev) => {
+    await fetch(`/api/customers/${c.partner_id}/salesperson`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ salesperson: ev.target.value }),
     });
     await refreshDrawer();
     load();

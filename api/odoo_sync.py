@@ -21,7 +21,7 @@ LINE_FIELDS = [
 ]
 PARTNER_FIELDS = ['id', 'name', 'phone', 'mobile', 'email', 'vat', 'street', 'city',
                   'property_payment_term_id', 'credit_limit', 'company_id',
-                  'region_id']
+                  'region_id', 'user_id']
 
 
 def term_days(label):
@@ -166,6 +166,7 @@ def sync(config, progress=None):
             for p in partners:
                 term = p.get('property_payment_term_id')
                 term_label = term[1] if term else ''
+                salesperson = p.get('user_id')
                 rows.append((
                     p['id'], p.get('name') or '', p.get('phone') or '',
                     p.get('mobile') or '', p.get('email') or '', p.get('vat') or '',
@@ -176,6 +177,8 @@ def sync(config, progress=None):
                     (p['region_id'][1] if p.get('region_id') else UNASSIGNED_AREA),
                     term_label, term_days(term_label),
                     p.get('credit_limit') or 0.0,
+                    salesperson[0] if salesperson else 0,
+                    salesperson[1] if salesperson else '',
                 ))
             # Placeholder rows for contacts the sync user can't read, so the
             # aging JOIN (customers JOIN documents) still picks up their open
@@ -183,12 +186,13 @@ def sync(config, progress=None):
             for pid in restricted_partner_ids:
                 rows.append((
                     pid, f'(access restricted — contact #{pid})', '', '', '', '',
-                    '', '', UNASSIGNED_AREA, '', None, 0.0,
+                    '', '', UNASSIGNED_AREA, '', None, 0.0, 0, '',
                 ))
             conn.executemany(
                 'INSERT INTO customers (partner_id, name, phone, mobile, email, vat,'
-                ' city, company, area, payment_term, term_days, credit_limit)'
-                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                ' city, company, area, payment_term, term_days, credit_limit,'
+                ' salesperson_id, salesperson)'
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 rows,
             )
             # A receivable line with no partner cannot be chased, but it should not

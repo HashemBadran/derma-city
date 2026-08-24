@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS customers (
     area    TEXT DEFAULT '',
     payment_term TEXT DEFAULT '',
     term_days    INTEGER DEFAULT NULL,
-    credit_limit REAL DEFAULT 0
+    credit_limit REAL DEFAULT 0,
+    salesperson_id INTEGER DEFAULT 0,
+    salesperson    TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -80,7 +82,8 @@ CREATE TABLE IF NOT EXISTS followups (
     promise_date     TEXT DEFAULT '',
     promise_amount   REAL DEFAULT 0,
     next_action_date TEXT DEFAULT '',
-    updated_at       TEXT DEFAULT ''
+    updated_at       TEXT DEFAULT '',
+    salesperson_override TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -259,13 +262,59 @@ def connect():
     return Conn(client)
 
 
+# Columns added to these tables after they already held real production data —
+# CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a new
+# column needs an explicit ALTER TABLE instead, the same way the collector app
+# migrates old databases forward without losing anyone's history.
+MIGRATIONS = {
+    'customers': [
+        ('salesperson_id', 'INTEGER DEFAULT 0'),
+        ('salesperson', "TEXT DEFAULT ''"),
+    ],
+    'followups': [
+        ('salesperson_override', "TEXT DEFAULT ''"),
+    ],
+}
+
+# Bump whenever SCHEMA or MIGRATIONS changes, so the next cold start after a
+# deploy re-runs init() once to pick it up.
+SCHEMA_VERSION = '1'
+
+
 def init():
-    """Create every table and index if it does not already exist."""
-    statements = [st.strip() for st in SCHEMA.split(';') if st.strip()]
+    """Create every table and index if it does not already exist, and add any
+    columns an older database is missing.
+
+    Called at import time on every cold start (see api/index.py) — the
+    stored schema-version check below collapses the steady-state case (every
+    cold start except the one right after a schema change) to a single round
+    trip instead of ~20 sequential PRAGMA/CREATE statements.
+    """
     conn = connect()
     try:
-        for st in statements:
+        try:
+            if get_setting(conn, 'schema_version') == SCHEMA_VERSION:
+                return
+        except Exception:
+            pass  # fresh database — settings doesn't exist yet, fall through
+
+        statements = [st.strip() for st in SCHEMA.split(';') if st.strip()]
+        tables = [st for st in statements if 'CREATE INDEX' not in st.upper()]
+        indexes = [st for st in statements if 'CREATE INDEX' in st.upper()]
+
+        for st in tables:
             conn.execute(st)
+        for table, columns in MIGRATIONS.items():
+            existing = {r['name'] for r in conn.execute(f'PRAGMA table_info({table})', []).fetchall()}
+            if not existing:
+                continue
+            for name, spec in columns:
+                if name not in existing:
+                    conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {spec}')
+        for st in indexes:
+            conn.execute(st)
+
+        set_setting(conn, 'schema_version', SCHEMA_VERSION)
     finally:
         conn.close()
 
