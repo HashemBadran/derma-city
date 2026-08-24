@@ -86,6 +86,13 @@ h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -.01em; }
 }
 .threshold input:focus { outline: none; border-bottom-color: var(--accent); }
 
+#scheme-switch {
+  font: inherit; font-size: 13px; font-weight: 550; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 7px 10px; cursor: pointer;
+}
+#scheme-switch:focus { outline: none; border-color: var(--accent); }
+
 .btn {
   font: inherit; font-size: 13px; font-weight: 550;
   padding: 8px 14px; border-radius: var(--radius);

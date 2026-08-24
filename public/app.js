@@ -29,6 +29,7 @@ function filterParams() {
   if (state.companyId) p.set('company_id', state.companyId);
   p.set('threshold', $('threshold').value || 270);
   p.set('scope', state.scope);
+  p.set('scheme', state.scheme);
   const q = $('f-search').value.trim();
   if (q) p.set('q', q);
   if ($('f-status').value) p.set('status', $('f-status').value);
@@ -46,18 +47,16 @@ function filterParams() {
 }
 
 // Cool green through amber to red — position on the ladder, not arbitrary hues.
-const BAND_COLORS = {
-  'Not Due': '#2f9e6b',
-  '1-30': '#8bbf3f',
-  '31-60': '#d4b026',
-  '61-90': '#e39a22',
-  '91-179': '#e07a1f',
-  '180-269': '#d55b26',
-  '270-364': '#c43d2f',
-  '365-545': '#a82a33',
-  '546+': '#7d1d2c',
-};
-const bandColor = (b) => BAND_COLORS[b] || (/^\d+-/.test(b) ? '#c43d2f' : '#7d1d2c');
+// Ramp by index rather than a fixed per-key map so any aging scheme (whatever
+// its band keys are) gets a sensible gradient, not one flat color.
+const COLOR_RAMP = ['#8bbf3f', '#d4b026', '#e39a22', '#e07a1f', '#d55b26', '#c43d2f', '#a82a33', '#7d1d2c'];
+function bandColor(b, idx, total) {
+  if (b === 'Not Due') return '#2f9e6b';
+  const n = Math.max(total, 1);
+  const pos = n <= 1 ? 1 : idx / (n - 1);
+  const i = Math.min(COLOR_RAMP.length - 1, Math.max(0, Math.round(pos * (COLOR_RAMP.length - 1))));
+  return COLOR_RAMP[i];
+}
 
 // --------------------------------------------------------------- data loading
 
@@ -71,6 +70,10 @@ async function bootstrap() {
   renderCompanySwitch();
   $('threshold').value = state.boot.threshold;
   setScope(state.boot.scope || 'all', false);
+
+  $('scheme-switch').innerHTML = (state.boot.schemes || [])
+    .map((s) => `<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('');
+  setScheme(state.boot.scheme || 'standard', false);
 
   const sel = $('f-status');
   sel.innerHTML = '<option value="">All statuses</option>' +
@@ -126,6 +129,18 @@ function setScope(scope, persist = true) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),
+    }).then(load);
+  }
+}
+
+function setScheme(scheme, persist = true) {
+  state.scheme = scheme;
+  $('scheme-switch').value = scheme;
+  if (persist) {
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheme }),
     }).then(load);
   }
 }
@@ -281,11 +296,13 @@ function renderAgingStrip() {
   if (!span) { $('aging-strip').innerHTML = ''; return; }
 
   const active = $('f-band').value;
+  const notDueOffset = bands[0] === 'Not Due' ? 1 : 0;
+  const overdueCount = bands.length - notDueOffset;
   const segments = bands.map((b, i) => {
     const pct = (magnitudes[i] / span) * 100;
     if (pct <= 0) return '';
     const amount = t.band_totals[i];
-    return `<span style="width:${pct}%;background:${bandColor(b)};opacity:${
+    return `<span style="width:${pct}%;background:${bandColor(b, i - notDueOffset, overdueCount)};opacity:${
       active && active !== b ? .3 : 1}" title="${esc(state.bandLabels[b] || b)}: ${fmt(amount)}"
       data-band="${esc(b)}"></span>`;
   }).join('');
@@ -295,7 +312,7 @@ function renderAgingStrip() {
     if (!amount) return '';
     const pct = t.aged_total ? Math.round((amount / t.aged_total) * 100) : 0;
     return `<span class="item ${active === b ? 'active' : ''}" data-band="${esc(b)}">
-      <i class="swatch" style="background:${bandColor(b)}"></i>
+      <i class="swatch" style="background:${bandColor(b, i - notDueOffset, overdueCount)}"></i>
       ${esc(state.bandLabels[b] || b)}
       <b class="amt ${amount < 0 ? 'neg' : ''}">${compact.format(amount)}</b>
       <em style="font-style:normal;opacity:.6">${pct}%</em>
@@ -735,6 +752,7 @@ function init() {
   initTableResize();
   $('btn-sync').addEventListener('click', startSync);
   $('threshold').addEventListener('change', saveThreshold);
+  $('scheme-switch').addEventListener('change', () => setScheme($('scheme-switch').value));
   $('drawer-close').addEventListener('click', closeDrawer);
   $('scrim').addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
@@ -1039,6 +1057,7 @@ function switchView(view) {
   $('btn-export').classList.toggle('hidden', view !== 'receivables');
   document.querySelector('.threshold').classList.toggle('hidden', view !== 'receivables');
   $('scope-switch').classList.toggle('hidden', view !== 'receivables');
+  $('scheme-switch').classList.toggle('hidden', view !== 'receivables');
   if (view === 'collections' && !coll.data) loadCollections();
   if (location.hash.slice(1) !== view) history.replaceState(null, '', `#${view}`);
 }

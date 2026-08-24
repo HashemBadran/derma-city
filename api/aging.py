@@ -40,6 +40,33 @@ BAND_TITLES = {
     '546+': 'Over 1.5 years',
 }
 
+# Alternate, flat 60/90-day ladder — some readers of the report just want even
+# round-number buckets instead of the calendar-month framing above.
+LADDER_60 = [
+    (1, 60, '1-60'),
+    (61, 120, '61-120'),
+    (121, 180, '121-180'),
+    (181, 270, '181-270'),
+    (271, 359, '271-359'),
+    (360, None, '360+'),
+]
+
+BAND_TITLES_60 = {
+    NOT_DUE: 'Within terms',
+    '1-60': '1–60 days',
+    '61-120': '61–120 days',
+    '121-180': '121–180 days',
+    '181-270': '181–270 days',
+    '271-359': '271–359 days',
+    '360+': '360+ days',
+}
+
+SCHEMES = {
+    'standard': {'label': 'Standard bands', 'ladder': LADDER, 'titles': BAND_TITLES},
+    'sixty': {'label': '60-day bands', 'ladder': LADDER_60, 'titles': BAND_TITLES_60},
+}
+DEFAULT_SCHEME = 'standard'
+
 
 def parse_date(s):
     y, m, d = (int(p) for p in s.split('-'))
@@ -51,20 +78,26 @@ def days_overdue(due_date, as_of=None):
     return ((as_of or date.today()) - parse_date(due_date)).days
 
 
-def band_for(days):
+def _ladder(scheme):
+    return SCHEMES.get(scheme, SCHEMES[DEFAULT_SCHEME])['ladder']
+
+
+def band_for(days, scheme=DEFAULT_SCHEME):
     if days <= 0:
         return NOT_DUE
-    for low, high, label in LADDER:
+    ladder = _ladder(scheme)
+    for low, high, label in ladder:
         if days >= low and (high is None or days <= high):
             return label
-    return LADDER[-1][2]
+    return ladder[-1][2]
 
 
-def visible_bands(threshold, scope='aged'):
+def visible_bands(threshold, scope='aged', scheme=DEFAULT_SCHEME):
     """Which columns the view should carry."""
+    ladder = _ladder(scheme)
     if scope == 'all':
-        return [NOT_DUE] + [label for _, _, label in LADDER]
-    bands = [(lo, hi, label) for lo, hi, label in LADDER if hi is None or hi >= threshold]
+        return [NOT_DUE] + [label for _, _, label in ladder]
+    bands = [(lo, hi, label) for lo, hi, label in ladder if hi is None or hi >= threshold]
     if not bands:
         return [f'{threshold}+']
     out = []
@@ -75,12 +108,13 @@ def visible_bands(threshold, scope='aged'):
     return out
 
 
-def band_label(band):
-    return BAND_TITLES.get(band, band)
+def band_label(band, scheme=DEFAULT_SCHEME):
+    titles = SCHEMES.get(scheme, SCHEMES[DEFAULT_SCHEME])['titles']
+    return titles.get(band, band)
 
 
 def build(conn, threshold, as_of=None, scope='aged', company_id=None,
-          area=None):
+          area=None, scheme=DEFAULT_SCHEME):
     """Aggregate open documents into per-customer aged positions.
 
     In 'all' scope every customer with an open balance is returned, including those
@@ -92,7 +126,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
     """
     as_of = as_of or date.today()
     include_all = scope == 'all'
-    bands = visible_bands(threshold, scope)
+    bands = visible_bands(threshold, scope, scheme)
     band_index = {b: i for i, b in enumerate(bands)}
 
     # Filtering on the document's company, not the customer's: a partner shared
@@ -185,7 +219,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         if not (include_all or days >= threshold):
             continue
 
-        band = band_for(days)
+        band = band_for(days, scheme)
         if band not in band_index:
             band = bands[0]
         c['buckets'][band_index[band]] += residual
@@ -241,6 +275,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         'documents': sum(c['aged_docs'] for c in included),
         'threshold': threshold,
         'scope': scope,
+        'scheme': scheme,
         'as_of': as_of.isoformat(),
     }
     return included, totals

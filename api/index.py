@@ -132,6 +132,17 @@ def scope_of(params, conn=None):
     return CONFIG.get('default_scope', 'all')
 
 
+def scheme_of(params, conn=None):
+    scheme = params.get('scheme')
+    if scheme in aging.SCHEMES:
+        return scheme
+    if conn is not None:
+        stored = db.get_setting(conn, 'scheme', '')
+        if stored in aging.SCHEMES:
+            return stored
+    return CONFIG.get('default_scheme', aging.DEFAULT_SCHEME)
+
+
 def filter_customers(customers, params):
     """Apply the screen's filters. Kept server-side so the export matches the view."""
     q = (params.get('q') or '').strip().lower()
@@ -401,6 +412,8 @@ class handler(BaseHTTPRequestHandler):
                 'currency': CONFIG.get('currency', 'SAR'),
                 'threshold': current_threshold(conn),
                 'scope': scope_of({}, conn),
+                'scheme': scheme_of({}, conn),
+                'schemes': [{'key': k, 'label': v['label']} for k, v in aging.SCHEMES.items()],
                 'statuses': [{'key': k, 'label': v} for k, v in db.STATUSES],
                 'has_data': db.has_data(conn),
                 'last_sync': dict(last) if last else None,
@@ -417,10 +430,11 @@ class handler(BaseHTTPRequestHandler):
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
+            scheme = scheme_of(params, conn)
             company = company_of(params, conn)
             everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
-                                             area=params.get('area') or None)
+                                             area=params.get('area') or None, scheme=scheme)
         finally:
             conn.close()
 
@@ -445,7 +459,7 @@ class handler(BaseHTTPRequestHandler):
                 'overdue': round(sum(c['overdue_total'] for c in everything
                                      if c.get('agency')), 2),
             },
-            'band_labels': {b: aging.band_label(b) for b in totals['bands']},
+            'band_labels': {b: aging.band_label(b, scheme) for b in totals['bands']},
         })
 
     def api_customer_detail(self, partner_id, params):
@@ -453,9 +467,10 @@ class handler(BaseHTTPRequestHandler):
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
+            scheme = scheme_of(params, conn)
             everything, _ = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                         company_id=company_of(params, conn),
-                                        area=params.get('area') or None)
+                                        area=params.get('area') or None, scheme=scheme)
             customer = next((c for c in everything if c['partner_id'] == partner_id), None)
             if customer is None:
                 return self._error(404, 'Customer has no items in the current view')
@@ -638,22 +653,29 @@ class handler(BaseHTTPRequestHandler):
                 if payload['scope'] not in ('all', 'aged'):
                     return self._error(400, 'Scope must be "all" or "aged"')
                 db.set_setting(conn, 'scope', payload['scope'])
+            if 'scheme' in payload:
+                if payload['scheme'] not in aging.SCHEMES:
+                    return self._error(400, 'Unknown aging scheme')
+                db.set_setting(conn, 'scheme', payload['scheme'])
             threshold = current_threshold(conn)
             scope = scope_of({}, conn)
+            scheme = scheme_of({}, conn)
             company = company_of({}, conn)
         finally:
             conn.close()
-        self._json({'threshold': threshold, 'scope': scope, 'company_id': company or ''})
+        self._json({'threshold': threshold, 'scope': scope, 'scheme': scheme,
+                     'company_id': company or ''})
 
     def api_export(self, params):
         conn = db.connect()
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
+            scheme = scheme_of(params, conn)
             company = company_of(params, conn)
             everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
-                                             area=params.get('area') or None)
+                                             area=params.get('area') or None, scheme=scheme)
             filtered = filter_customers(everything, params)
             wb = export.build(filtered, recompute_totals(filtered, totals),
                               company_label(company, CONFIG),
@@ -667,6 +689,8 @@ class handler(BaseHTTPRequestHandler):
         wb.save(buf)
         stamp = datetime.now().strftime('%Y-%m-%d')
         label = 'AllOpen' if scope == 'all' else f'Overdue{threshold}plus'
+        if scheme != aging.DEFAULT_SCHEME:
+            label += f'_{scheme}'
         name = f'Receivables_{label}_{stamp}.xlsx'
         self._send(
             200, buf.getvalue(),
