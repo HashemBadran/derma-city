@@ -130,23 +130,31 @@ def sync(config, progress=None):
     version = odoo.connect()
 
     say('Fetching open receivable lines…')
-    # Also pulls in lines that are NOT open (amount_residual = 0) as long as
-    # they were invoiced this year — that is how a customer who was invoiced
-    # and fully paid this year (nothing open anywhere) still shows up in the
-    # book at SAR 0 instead of just disappearing the moment their balance
-    # clears. A customer who paid off an old invoice years ago and has had no
-    # activity since is not part of this — the date bound keeps the list to
-    # customers who are actually still relevant to look at.
-    year_start = f'{datetime.now().year}-01-01'
-    domain = [
+    open_domain = [
+        ('parent_state', '=', 'posted'),
+        ('account_id.account_type', '=', 'asset_receivable'),
+        ('amount_residual', '!=', 0),
+        ('company_id', 'in', company_ids),
+    ]
+    lines = _fetch_all(odoo, 'account.move.line', open_domain, LINE_FIELDS, context)
+    say(f'Got {len(lines)} open lines. Finding every DC customer, including zero-balance ones…')
+
+    # Every customer this company has ever invoiced, not just the ones with an
+    # open balance right now — so someone fully paid off (or who never owed
+    # anything overdue in the first place) still shows up in the book at
+    # SAR 0 instead of just being absent. A minimal field set keeps this
+    # cheap even though, unlike `lines` above, it is not bounded by date and
+    # can span the account's whole history.
+    all_domain = [
         ('parent_state', '=', 'posted'),
         ('account_id.account_type', '=', 'asset_receivable'),
         ('company_id', 'in', company_ids),
-        '|', ('amount_residual', '!=', 0), ('date', '>=', year_start),
     ]
-    all_lines = _fetch_all(odoo, 'account.move.line', domain, LINE_FIELDS, context)
-    lines = [l for l in all_lines if round(l.get('amount_residual') or 0.0, 2) != 0]
-    say(f'Got {len(lines)} open lines. Fetching invoice salespeople…')
+    all_lines = _fetch_all(
+        odoo, 'account.move.line', all_domain,
+        ['partner_id', 'company_id', 'date', 'move_id'], context,
+    )
+    say(f'{len(all_lines)} receivable lines total. Fetching invoice salespeople…')
 
     # This Odoo instance does not use res.partner.user_id (the customer-level
     # "Salesperson" field is essentially unset) — the salesperson actually
@@ -192,15 +200,15 @@ def sync(config, progress=None):
             odoo, 'res.partner', partner_ids[i:i + 300], PARTNER_FIELDS, context,
             say, restricted_partner_ids,
         ))
-    # Customers who show up in all_lines (this year) but never in lines (open)
-    # were invoiced this year and have nothing open anywhere — paid in full.
+    # Customers who show up in all_lines (ever invoiced) but never in lines
+    # (currently open) have nothing owing anywhere right now — paid in full.
     open_partner_ids = set(partner_ids)
-    settled_info = {}  # partner_id -> (company_id, most recent invoice date this year)
+    settled_info = {}  # partner_id -> (company_id, most recent invoice date)
     for l in all_lines:
         if not l.get('partner_id'):
             continue
         pid = l['partner_id'][0]
-        if pid in open_partner_ids or l['date'] < year_start:
+        if pid in open_partner_ids:
             continue
         cid = l['company_id'][0] if l.get('company_id') else 0
         current = settled_info.get(pid)
@@ -215,7 +223,7 @@ def sync(config, progress=None):
             say, restricted_partner_ids,
         ))
     if settled_partners:
-        say(f'{len(settled_partners)} customer(s) invoiced this year now show a SAR 0 balance.')
+        say(f'{len(settled_partners)} customer(s) with no open balance are still shown at SAR 0.')
     if restricted_partner_ids:
         say(f'{len(restricted_partner_ids)} contact(s) skipped for access reasons: '
             f'{restricted_partner_ids} — their receivable lines are still synced under a '
@@ -321,7 +329,7 @@ def sync(config, progress=None):
         'synced_at': now,
         'lines': len(lines),
         'customers': len(partners),
-        'settled_this_year': len(settled_partners),
+        'settled_customers': len(settled_partners),
         'total_open': residual,
         'collection_rows': len(collection_rows),
         'collected': round(sum(r['amount'] for r in collection_rows), 2),
