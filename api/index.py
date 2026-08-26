@@ -164,6 +164,7 @@ def filter_customers(customers, params):
     band = params.get('band') or ''
     term = (params.get('term') or '').strip()
     owner = (params.get('owner') or '').strip().lower()
+    salesperson = (params.get('salesperson') or '').strip().lower()
     try:
         minimum = float(params.get('min') or 0)
     except ValueError:
@@ -183,6 +184,8 @@ def filter_customers(customers, params):
         if status and c['status'] != status:
             continue
         if owner and owner not in (c['owner'] or '').lower():
+            continue
+        if salesperson and salesperson not in (c.get('salesperson') or '').lower():
             continue
         if minimum and c['aged_total'] < minimum:
             continue
@@ -473,6 +476,7 @@ class handler(BaseHTTPRequestHandler):
             'attention': attention_items(everything),
             'terms': term_summary(everything),
             'areas': area_summary(everything),
+            'salespeople': sorted({c['salesperson'] for c in everything if c.get('salesperson')}),
             'agency': {
                 'count': sum(1 for c in everything if c.get('agency')),
                 'balance': round(sum(c['total_open'] for c in everything

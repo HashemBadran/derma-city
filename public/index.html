@@ -63,6 +63,8 @@
       <select id="f-term"><option value="">All credit terms</option></select>
       <input type="number" id="f-min" placeholder="Min amount" step="1000">
       <input type="text" id="f-owner" placeholder="Owner">
+      <input type="text" id="f-salesperson" list="f-salesperson-list" placeholder="Salesperson…" autocomplete="off">
+      <datalist id="f-salesperson-list"></datalist>
       <label class="check"><input type="checkbox" id="f-overdue"> Has overdue</label>
       <label class="check" title="Customers whose whole balance nets to zero — an old invoice cancelled by an unapplied credit. Nothing to collect.">
         <input type="checkbox" id="f-hide-settled" checked> Hide settled</label>

@@ -39,6 +39,7 @@ function filterParams() {
   if ($('f-agency').value) p.set('agency', $('f-agency').value);
   if ($('f-min').value) p.set('min', $('f-min').value);
   if ($('f-owner').value.trim()) p.set('owner', $('f-owner').value.trim());
+  if ($('f-salesperson').value.trim()) p.set('salesperson', $('f-salesperson').value.trim());
   if ($('f-hide-credits').checked) p.set('hide_credits', '1');
   if ($('f-hide-settled').checked) p.set('hide_settled', '1');
   if ($('f-due').checked) p.set('due_only', '1');
@@ -191,6 +192,7 @@ async function load() {
   syncBandFilter(data.grand_totals.bands);
   syncTermFilter(data.terms);
   syncAreaFilter(data.areas);
+  syncSalespersonList(data.salespeople);
   $('btn-export').href = '/api/export.xlsx?' + p.toString();
 
   renderKpis();
@@ -210,6 +212,15 @@ function syncAreaFilter(areas) {
   sel.innerHTML = '<option value="">All areas</option>' + areas.map((a) =>
     `<option value="${esc(a.area)}">${esc(a.area)} (${a.count})</option>`).join('');
   if (areas.some((a) => a.area === current)) sel.value = current;
+}
+
+function syncSalespersonList(names) {
+  if (!names) return;
+  const dl = $('f-salesperson-list');
+  const wanted = names.join('|');
+  if (dl.dataset.names === wanted) return;
+  dl.dataset.names = wanted;
+  dl.innerHTML = names.map((n) => `<option value="${esc(n)}">`).join('');
 }
 
 function syncTermFilter(terms) {
@@ -785,11 +796,11 @@ function init() {
   const reload = debounce(load, 220);
   $('f-search').addEventListener('input', reload);
   ['f-status', 'f-band', 'f-term', 'f-area', 'f-agency', 'f-min', 'f-owner',
-   'f-hide-credits', 'f-hide-settled', 'f-due', 'f-overdue'].forEach((id) => {
+   'f-salesperson', 'f-hide-credits', 'f-hide-settled', 'f-due', 'f-overdue'].forEach((id) => {
     $(id).addEventListener('input', reload);
   });
   $('f-reset').addEventListener('click', () => {
-    ['f-search', 'f-min', 'f-owner'].forEach((id) => { $(id).value = ''; });
+    ['f-search', 'f-min', 'f-owner', 'f-salesperson'].forEach((id) => { $(id).value = ''; });
     ['f-status', 'f-band', 'f-term', 'f-area', 'f-agency'].forEach((id) => { $(id).value = ''; });
     ['f-hide-credits', 'f-due', 'f-overdue'].forEach((id) => { $(id).checked = false; });
     $('f-hide-settled').checked = true;
