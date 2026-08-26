@@ -61,9 +61,29 @@ BAND_TITLES_60 = {
     '360+': '360+ days',
 }
 
+# Flat 90-day ladder — quarter-sized buckets instead of 60-day or
+# calendar-month ones.
+LADDER_90 = [
+    (1, 90, '1-90'),
+    (91, 180, '91-180'),
+    (181, 270, '181-270'),
+    (271, 360, '271-360'),
+    (361, None, '361+'),
+]
+
+BAND_TITLES_90 = {
+    NOT_DUE: 'Within terms',
+    '1-90': '1–90 days',
+    '91-180': '91–180 days',
+    '181-270': '181–270 days',
+    '271-360': '271–360 days',
+    '361+': '361+ days',
+}
+
 SCHEMES = {
     'standard': {'label': 'Standard bands', 'ladder': LADDER, 'titles': BAND_TITLES},
     'sixty': {'label': '60-day bands', 'ladder': LADDER_60, 'titles': BAND_TITLES_60},
+    'ninety': {'label': '90-day bands', 'ladder': LADDER_90, 'titles': BAND_TITLES_90},
 }
 DEFAULT_SCHEME = 'standard'
 
