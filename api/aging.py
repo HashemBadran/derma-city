@@ -1,22 +1,34 @@
 """Read-time aging.
 
-Documents are stored with their due date only, so age is recomputed on every read
-against today's date. A workbook exported on Monday and a screen opened on Friday
-therefore disagree by four days — which is correct, and the reason nothing here is
-cached into the synced tables.
+Age is recomputed on every read against today's date, so a workbook exported on
+Monday and a screen opened on Friday disagree by four days — which is correct, and
+the reason nothing here is cached into the synced tables.
+
+The aging basis is selectable (`basis`):
+
+  'due'     — age = today - due date. An item ages only once its credit term
+              lapses; anything still within terms sits in 'Not Due'.
+  'invoice' — age = today - invoice date. An item enters the 1-30 band the day it
+              is issued, regardless of remaining term; 'Not Due' then only catches
+              the rare future-dated invoice.
+
+Either way the "overdue" money total is measured against the due date, so the
+split between money "within terms" and money "overdue" always reflects payment
+terms, independent of the aging basis.
 
 Two scopes are supported:
 
-  'all'  — every open receivable, including invoices still within their credit term
-  'aged' — only documents at least `threshold` days past due
+  'all'  — every open receivable
+  'aged' — only documents at least `threshold` days old on the chosen basis
 """
 
 from datetime import date
 
 NOT_DUE = 'Not Due'
 
-# Ladder of overdue bands. 'Not Due' sits outside it because it is not an age — it
-# covers everything still inside its payment term, however far in the future.
+# Ladder of age bands. 'Not Due' sits outside it because it is not an age: on the
+# 'due' basis it holds everything still inside its payment term, and on the
+# 'invoice' basis only future-dated invoices (age <= 0).
 LADDER = [
     (1, 30, '1-30'),
     (31, 60, '31-60'),
@@ -46,9 +58,22 @@ def parse_date(s):
     return date(y, m, d)
 
 
+DEFAULT_BASIS = 'due'
+BASES = ('due', 'invoice')
+
+
 def days_overdue(due_date, as_of=None):
-    """Positive when past due, zero or negative while still within terms."""
+    """Positive when past due, zero or negative while still within terms. Always
+    measured against the due date — this is what the overdue money total uses,
+    regardless of the aging basis."""
     return ((as_of or date.today()) - parse_date(due_date)).days
+
+
+def age_on(row, basis, as_of=None):
+    """Age of one document on the chosen basis: 'due' counts from the due date,
+    'invoice' from the invoice date."""
+    anchor = row['inv_date'] if basis == 'invoice' else row['due_date']
+    return ((as_of or date.today()) - parse_date(anchor)).days
 
 
 def band_for(days):
@@ -80,17 +105,22 @@ def band_label(band):
 
 
 def build(conn, threshold, as_of=None, scope='aged', company_id=None,
-          area=None):
+          area=None, basis=DEFAULT_BASIS):
     """Aggregate open documents into per-customer aged positions.
+
+    `basis` picks what the age is counted from — 'due' (from the due date) or
+    'invoice' (from the invoice date); see the module docstring.
 
     In 'all' scope every customer with an open balance is returned, including those
     entirely within their credit terms. In 'aged' scope only documents at least
-    `threshold` days past due are counted, and customers with none drop out.
+    `threshold` days old on the chosen basis are counted, and customers with none
+    drop out.
 
     Customers whose included items net to zero or below are kept either way — an
     unapplied credit note is worth seeing, not filtering away.
     """
     as_of = as_of or date.today()
+    basis = basis if basis in BASES else DEFAULT_BASIS
     include_all = scope == 'all'
     bands = visible_bands(threshold, scope)
     band_index = {b: i for i, b in enumerate(bands)}
@@ -173,28 +203,31 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
                 'documents': [],
             }
 
-        days = days_overdue(r['due_date'], as_of)
+        # `age` drives the bands and the 'aged' cutoff and follows `basis`.
+        # `overdue` follows the due date always, and feeds the money split below.
+        age = age_on(r, basis, as_of)
+        overdue = days_overdue(r['due_date'], as_of)
         residual = r['residual']
         c['total_open'] += residual
         c['open_docs'] += 1
-        if days > 0:
+        if overdue > 0:
             c['overdue_total'] += residual
         else:
             c['not_due_total'] += residual
 
-        if not (include_all or days >= threshold):
+        if not (include_all or age >= threshold):
             continue
 
-        band = band_for(days)
+        band = band_for(age)
         if band not in band_index:
             band = bands[0]
         c['buckets'][band_index[band]] += residual
         c['aged_total'] += residual
         c['aged_docs'] += 1
-        if c['oldest_days'] is None or days > c['oldest_days']:
-            c['oldest_days'] = days
+        if c['oldest_days'] is None or age > c['oldest_days']:
+            c['oldest_days'] = age
             c['oldest_due'] = r['due_date']
-        if days <= 0 and (not c['next_due'] or r['due_date'] < c['next_due']):
+        if overdue <= 0 and (not c['next_due'] or r['due_date'] < c['next_due']):
             c['next_due'] = r['due_date']
         c['documents'].append({
             'line_id': r['line_id'],
@@ -203,7 +236,8 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
             'journal': r['journal'],
             'inv_date': r['inv_date'],
             'due_date': r['due_date'],
-            'days': days,
+            'days': age,
+            'overdue_days': overdue,
             'band': band,
             'original': round(r['original'], 2),
             'residual': round(residual, 2),
@@ -241,6 +275,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         'documents': sum(c['aged_docs'] for c in included),
         'threshold': threshold,
         'scope': scope,
+        'basis': basis,
         'as_of': as_of.isoformat(),
     }
     return included, totals

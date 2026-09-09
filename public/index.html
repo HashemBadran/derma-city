@@ -28,6 +28,13 @@
       <input type="number" id="threshold" min="0" step="30" value="270">
       days or more
     </label>
+    <label class="threshold" id="basis-wrap" title="Count each item's age from its due date, or from its invoice date. The overdue money total always follows the due date.">
+      age from
+      <select id="aging-basis">
+        <option value="due">due date</option>
+        <option value="invoice">invoice date</option>
+      </select>
+    </label>
     <button id="btn-sync" class="btn">Refresh from Odoo</button>
     <a id="btn-export" class="btn btn-ghost" href="/api/export.xlsx">Export Excel</a>
     <button id="btn-theme" class="btn btn-icon" title="Toggle theme" aria-label="Toggle theme">◐</button>

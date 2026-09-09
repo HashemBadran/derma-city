@@ -29,6 +29,7 @@ function filterParams() {
   if (state.companyId) p.set('company_id', state.companyId);
   p.set('threshold', $('threshold').value || 270);
   p.set('scope', state.scope);
+  p.set('basis', state.basis || 'due');
   const q = $('f-search').value.trim();
   if (q) p.set('q', q);
   if ($('f-status').value) p.set('status', $('f-status').value);
@@ -71,6 +72,7 @@ async function bootstrap() {
   renderCompanySwitch();
   $('threshold').value = state.boot.threshold;
   setScope(state.boot.scope || 'all', false);
+  setBasis(state.boot.basis || 'due', false);
 
   const sel = $('f-status');
   sel.innerHTML = '<option value="">All statuses</option>' +
@@ -126,6 +128,19 @@ function setScope(scope, persist = true) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scope }),
+    }).then(load);
+  }
+}
+
+function setBasis(basis, persist = true) {
+  state.basis = basis === 'invoice' ? 'invoice' : 'due';
+  $('aging-basis').value = state.basis;
+  if (persist) {
+    // Remembered server-side so both views and every export agree on the basis.
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ basis: state.basis }),
     }).then(load);
   }
 }
@@ -742,6 +757,7 @@ function init() {
   document.querySelectorAll('.seg').forEach((b) => {
     b.addEventListener('click', () => setScope(b.dataset.scope));
   });
+  $('aging-basis').addEventListener('change', (e) => setBasis(e.target.value));
 
   const reload = debounce(load, 220);
   $('f-search').addEventListener('input', reload);
@@ -1038,6 +1054,7 @@ function switchView(view) {
   // scopes both tabs, so it has to stay reachable on Collections too.
   $('btn-export').classList.toggle('hidden', view !== 'receivables');
   document.querySelector('.threshold').classList.toggle('hidden', view !== 'receivables');
+  $('basis-wrap').classList.toggle('hidden', view !== 'receivables');
   $('scope-switch').classList.toggle('hidden', view !== 'receivables');
   if (view === 'collections' && !coll.data) loadCollections();
   if (location.hash.slice(1) !== view) history.replaceState(null, '', `#${view}`);

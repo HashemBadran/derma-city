@@ -132,6 +132,21 @@ def scope_of(params, conn=None):
     return CONFIG.get('default_scope', 'all')
 
 
+def basis_of(params, conn=None):
+    """Aging basis — 'due' or 'invoice'. Request param wins, then the stored
+    setting, then the config default, then 'due'. Remembered between sessions,
+    like scope."""
+    basis = params.get('basis')
+    if basis in aging.BASES:
+        return basis
+    if conn is not None:
+        stored = db.get_setting(conn, 'aging_basis', '')
+        if stored in aging.BASES:
+            return stored
+    default = CONFIG.get('default_aging_basis', aging.DEFAULT_BASIS)
+    return default if default in aging.BASES else aging.DEFAULT_BASIS
+
+
 def filter_customers(customers, params):
     """Apply the screen's filters. Kept server-side so the export matches the view."""
     q = (params.get('q') or '').strip().lower()
@@ -401,6 +416,7 @@ class handler(BaseHTTPRequestHandler):
                 'currency': CONFIG.get('currency', 'SAR'),
                 'threshold': current_threshold(conn),
                 'scope': scope_of({}, conn),
+                'basis': basis_of({}, conn),
                 'statuses': [{'key': k, 'label': v} for k, v in db.STATUSES],
                 'has_data': db.has_data(conn),
                 'last_sync': dict(last) if last else None,
@@ -420,7 +436,8 @@ class handler(BaseHTTPRequestHandler):
             company = company_of(params, conn)
             everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
-                                             area=params.get('area') or None)
+                                             area=params.get('area') or None,
+                                             basis=basis_of(params, conn))
         finally:
             conn.close()
 
@@ -455,7 +472,8 @@ class handler(BaseHTTPRequestHandler):
             scope = scope_of(params, conn)
             everything, _ = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                         company_id=company_of(params, conn),
-                                        area=params.get('area') or None)
+                                        area=params.get('area') or None,
+                                        basis=basis_of(params, conn))
             customer = next((c for c in everything if c['partner_id'] == partner_id), None)
             if customer is None:
                 return self._error(404, 'Customer has no items in the current view')
@@ -638,12 +656,18 @@ class handler(BaseHTTPRequestHandler):
                 if payload['scope'] not in ('all', 'aged'):
                     return self._error(400, 'Scope must be "all" or "aged"')
                 db.set_setting(conn, 'scope', payload['scope'])
+            if 'basis' in payload:
+                if payload['basis'] not in aging.BASES:
+                    return self._error(400, 'Aging basis must be "due" or "invoice"')
+                db.set_setting(conn, 'aging_basis', payload['basis'])
             threshold = current_threshold(conn)
             scope = scope_of({}, conn)
+            basis = basis_of({}, conn)
             company = company_of({}, conn)
         finally:
             conn.close()
-        self._json({'threshold': threshold, 'scope': scope, 'company_id': company or ''})
+        self._json({'threshold': threshold, 'scope': scope, 'basis': basis,
+                    'company_id': company or ''})
 
     def api_export(self, params):
         conn = db.connect()
@@ -653,7 +677,8 @@ class handler(BaseHTTPRequestHandler):
             company = company_of(params, conn)
             everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
-                                             area=params.get('area') or None)
+                                             area=params.get('area') or None,
+                                             basis=basis_of(params, conn))
             filtered = filter_customers(everything, params)
             wb = export.build(filtered, recompute_totals(filtered, totals),
                               company_label(company, CONFIG),

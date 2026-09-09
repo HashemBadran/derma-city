@@ -61,7 +61,8 @@ def build(customers, totals, company_label, currency):
     ws['A1'] = (f'{company_label} — Open Receivables, Full Aging' if all_open
                 else f'{company_label} — Receivables {threshold}+ Days Overdue')
     ws['A1'].font = TITLE_FONT
-    ws['A2'] = (f'As of {as_of}   |   Currency: {currency}   |   '
+    basis_label = 'invoice date' if totals.get('basis') == 'invoice' else 'due date'
+    ws['A2'] = (f'As of {as_of}   |   Aged from {basis_label}   |   Currency: {currency}   |   '
                 f'{totals["customers"]} customers   |   {totals["documents"]} documents')
     ws['A2'].font = SUB_FONT
     ws.merge_cells('A1:M1')
@@ -173,7 +174,7 @@ def build(customers, totals, company_label, currency):
     ws2['A1'] = (f'{company_label} — Line Detail, All Open Items' if all_open
                  else f'{company_label} — Line Detail, {threshold}+ Days Overdue')
     ws2['A1'].font = TITLE_FONT
-    ws2['A2'] = f'As of {as_of}   |   Currency: {currency}'
+    ws2['A2'] = f'As of {as_of}   |   Aged from {basis_label}   |   Currency: {currency}'
     ws2['A2'].font = SUB_FONT
     ws2.merge_cells('A1:K1')
     ws2.merge_cells('A2:K2')
