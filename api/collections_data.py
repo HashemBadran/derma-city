@@ -242,7 +242,10 @@ def where(filters):
     if filters.get('date_to'):
         clauses.append('date <= ?'); params.append(filters['date_to'])
     if filters.get('user_id'):
-        clauses.append('user_id = ?'); params.append(int(filters['user_id']))
+        # Text, not int: collections_effective.user_id is either a real Odoo
+        # user id (stringified) or a local salesperson-override name — see
+        # the view's definition in db.py.
+        clauses.append('user_id = ?'); params.append(str(filters['user_id']))
     if filters.get('partner_id'):
         clauses.append('partner_id = ?'); params.append(int(filters['partner_id']))
     if filters.get('journal'):
@@ -283,15 +286,15 @@ def totals(conn, filters):
         '       COUNT(DISTINCT CASE WHEN applied THEN user_id END) AS salespeople,'
         '       COUNT(DISTINCT date)     AS days,'
         '       MIN(date) AS first_date, MAX(date) AS last_date'
-        f'  FROM collections{w}', p).fetchone()
+        f'  FROM collections_effective{w}', p).fetchone()
     out = {k: row[k] for k in row.keys()}
     out['total'] = out['total'] or 0.0
     un = conn.execute(
-        f'SELECT ROUND(SUM(amount),2) AS v FROM collections{w}'
+        f'SELECT ROUND(SUM(amount),2) AS v FROM collections_effective{w}'
         + (' AND ' if w else ' WHERE ') + 'applied = 0', p).fetchone()
     out['unapplied'] = un['v'] or 0.0
     op = conn.execute(
-        f'SELECT ROUND(SUM(amount),2) AS v FROM collections{w}'
+        f'SELECT ROUND(SUM(amount),2) AS v FROM collections_effective{w}'
         + (' AND ' if w else ' WHERE ') + 'opening = 1', p).fetchone()
     out['opening'] = op['v'] or 0.0
     out['applied'] = round(out['total'] - out['unapplied'], 2)
@@ -308,7 +311,7 @@ def breakdown(conn, filters, dim, limit=None):
            '       COUNT(DISTINCT partner_id) AS customers,'
            '       COUNT(DISTINCT date) AS days,'
            '       MAX(date) AS last_date'
-           f'  FROM collections{w} GROUP BY {key}')
+           f'  FROM collections_effective{w} GROUP BY {key}')
     sql += ' ORDER BY key ASC' if dim in ('day', 'month') else ' ORDER BY total DESC'
     if limit:
         sql += f' LIMIT {int(limit)}'
@@ -324,11 +327,11 @@ def daily(conn, filters):
 
 def receipts(conn, filters, limit=400, offset=0):
     w, p = where(filters)
-    total = conn.execute(f'SELECT COUNT(*) AS n FROM collections{w}', p).fetchone()['n']
+    total = conn.execute(f'SELECT COUNT(*) AS n FROM collections_effective{w}', p).fetchone()['n']
     rows = [dict(r) for r in conn.execute(
         'SELECT date, doc, ref, journal, customer, area, invoice, invoice_date,'
         '       salesperson, applied, amount'
-        f'  FROM collections{w} ORDER BY date DESC, line_id DESC LIMIT ? OFFSET ?',
+        f'  FROM collections_effective{w} ORDER BY date DESC, line_id DESC LIMIT ? OFFSET ?',
         p + [int(limit), int(offset)])]
     return {'rows': rows, 'total': total}
 
@@ -339,7 +342,7 @@ def facets(conn):
     return {
         'salespeople': distinct(
             'SELECT user_id AS id, MAX(salesperson) AS name, ROUND(SUM(amount),2) AS total'
-            ' FROM collections GROUP BY user_id ORDER BY total DESC'),
+            ' FROM collections_effective GROUP BY user_id ORDER BY total DESC'),
         'companies': distinct(
             'SELECT company_id AS id, MAX(company) AS name, ROUND(SUM(amount),2) AS total'
             ' FROM collections GROUP BY company_id ORDER BY total DESC'),

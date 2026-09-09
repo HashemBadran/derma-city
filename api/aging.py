@@ -52,6 +52,53 @@ BAND_TITLES = {
     '546+': 'Over 1.5 years',
 }
 
+# Alternate, flat 60/90-day ladder — some readers of the report just want even
+# round-number buckets instead of the calendar-month framing above.
+LADDER_60 = [
+    (1, 60, '1-60'),
+    (61, 120, '61-120'),
+    (121, 180, '121-180'),
+    (181, 270, '181-270'),
+    (271, 359, '271-359'),
+    (360, None, '360+'),
+]
+
+BAND_TITLES_60 = {
+    NOT_DUE: 'Within terms',
+    '1-60': '1–60 days',
+    '61-120': '61–120 days',
+    '121-180': '121–180 days',
+    '181-270': '181–270 days',
+    '271-359': '271–359 days',
+    '360+': '360+ days',
+}
+
+# Flat 90-day ladder — quarter-sized buckets instead of 60-day or
+# calendar-month ones.
+LADDER_90 = [
+    (1, 90, '1-90'),
+    (91, 180, '91-180'),
+    (181, 270, '181-270'),
+    (271, 360, '271-360'),
+    (361, None, '361+'),
+]
+
+BAND_TITLES_90 = {
+    NOT_DUE: 'Within terms',
+    '1-90': '1–90 days',
+    '91-180': '91–180 days',
+    '181-270': '181–270 days',
+    '271-360': '271–360 days',
+    '361+': '361+ days',
+}
+
+SCHEMES = {
+    'standard': {'label': 'Standard bands', 'ladder': LADDER, 'titles': BAND_TITLES},
+    'sixty': {'label': '60-day bands', 'ladder': LADDER_60, 'titles': BAND_TITLES_60},
+    'ninety': {'label': '90-day bands', 'ladder': LADDER_90, 'titles': BAND_TITLES_90},
+}
+DEFAULT_SCHEME = 'standard'
+
 
 def parse_date(s):
     y, m, d = (int(p) for p in s.split('-'))
@@ -76,20 +123,26 @@ def age_on(row, basis, as_of=None):
     return ((as_of or date.today()) - parse_date(anchor)).days
 
 
-def band_for(days):
+def _ladder(scheme):
+    return SCHEMES.get(scheme, SCHEMES[DEFAULT_SCHEME])['ladder']
+
+
+def band_for(days, scheme=DEFAULT_SCHEME):
     if days <= 0:
         return NOT_DUE
-    for low, high, label in LADDER:
+    ladder = _ladder(scheme)
+    for low, high, label in ladder:
         if days >= low and (high is None or days <= high):
             return label
-    return LADDER[-1][2]
+    return ladder[-1][2]
 
 
-def visible_bands(threshold, scope='aged'):
+def visible_bands(threshold, scope='aged', scheme=DEFAULT_SCHEME):
     """Which columns the view should carry."""
+    ladder = _ladder(scheme)
     if scope == 'all':
-        return [NOT_DUE] + [label for _, _, label in LADDER]
-    bands = [(lo, hi, label) for lo, hi, label in LADDER if hi is None or hi >= threshold]
+        return [NOT_DUE] + [label for _, _, label in ladder]
+    bands = [(lo, hi, label) for lo, hi, label in ladder if hi is None or hi >= threshold]
     if not bands:
         return [f'{threshold}+']
     out = []
@@ -100,16 +153,19 @@ def visible_bands(threshold, scope='aged'):
     return out
 
 
-def band_label(band):
-    return BAND_TITLES.get(band, band)
+def band_label(band, scheme=DEFAULT_SCHEME):
+    titles = SCHEMES.get(scheme, SCHEMES[DEFAULT_SCHEME])['titles']
+    return titles.get(band, band)
 
 
 def build(conn, threshold, as_of=None, scope='aged', company_id=None,
-          area=None, basis=DEFAULT_BASIS):
+          area=None, basis=DEFAULT_BASIS, scheme=DEFAULT_SCHEME):
     """Aggregate open documents into per-customer aged positions.
 
     `basis` picks what the age is counted from — 'due' (from the due date) or
-    'invoice' (from the invoice date); see the module docstring.
+    'invoice' (from the invoice date); see the module docstring. `scheme`
+    picks which bucket ladder the age lands in (see SCHEMES) — orthogonal to
+    basis: either date can be read against any of the three bucket widths.
 
     In 'all' scope every customer with an open balance is returned, including those
     entirely within their credit terms. In 'aged' scope only documents at least
@@ -122,7 +178,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
     as_of = as_of or date.today()
     basis = basis if basis in BASES else DEFAULT_BASIS
     include_all = scope == 'all'
-    bands = visible_bands(threshold, scope)
+    bands = visible_bands(threshold, scope, scheme)
     band_index = {b: i for i, b in enumerate(bands)}
 
     # Filtering on the document's company, not the customer's: a partner shared
@@ -146,11 +202,12 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
     rows = conn.execute(
         'SELECT c.partner_id, c.name, c.phone, c.mobile, c.email, c.city,'
         '       c.payment_term, c.term_days, c.credit_limit, c.area,'
+        '       c.salesperson_id, c.salesperson,'
         '       d.company_id, d.company,'
         '       d.line_id, d.doc, d.ref, d.journal, d.inv_date, d.due_date,'
         '       d.original, d.residual,'
         '       f.status, f.owner, f.promise_date, f.promise_amount,'
-        '       f.next_action_date, f.updated_at,'
+        '       f.next_action_date, f.updated_at, f.salesperson_override,'
         '       (ag.partner_id IS NOT NULL) AS is_agency,'
         '       nt.note_count, nt.last_note_at'
         '  FROM customers c'
@@ -182,6 +239,13 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
                 'payment_term': r['payment_term'] or '',
                 'term_days': r['term_days'],
                 'credit_limit': r['credit_limit'] or 0.0,
+                # The salesperson synced from Odoo (res.partner.user_id) is the
+                # baseline; a local override, if set, wins for display/filtering
+                # without ever touching Odoo. Both are exposed so the UI can show
+                # "overridden from X" and offer a reset back to the synced value.
+                'salesperson_synced': r['salesperson'] or '',
+                'salesperson_override': r['salesperson_override'] or '',
+                'salesperson': r['salesperson_override'] or r['salesperson'] or '',
                 'status': r['status'] or 'new',
                 'owner': r['owner'] or '',
                 'promise_date': r['promise_date'] or '',
@@ -218,7 +282,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         if not (include_all or age >= threshold):
             continue
 
-        band = band_for(age)
+        band = band_for(age, scheme)
         if band not in band_index:
             band = bands[0]
         c['buckets'][band_index[band]] += residual
@@ -276,6 +340,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         'threshold': threshold,
         'scope': scope,
         'basis': basis,
+        'scheme': scheme,
         'as_of': as_of.isoformat(),
     }
     return included, totals

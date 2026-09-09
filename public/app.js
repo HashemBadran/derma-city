@@ -30,6 +30,7 @@ function filterParams() {
   p.set('threshold', $('threshold').value || 270);
   p.set('scope', state.scope);
   p.set('basis', state.basis || 'due');
+  p.set('scheme', state.scheme);
   const q = $('f-search').value.trim();
   if (q) p.set('q', q);
   if ($('f-status').value) p.set('status', $('f-status').value);
@@ -39,6 +40,7 @@ function filterParams() {
   if ($('f-agency').value) p.set('agency', $('f-agency').value);
   if ($('f-min').value) p.set('min', $('f-min').value);
   if ($('f-owner').value.trim()) p.set('owner', $('f-owner').value.trim());
+  if ($('f-salesperson').value.trim()) p.set('salesperson', $('f-salesperson').value.trim());
   if ($('f-hide-credits').checked) p.set('hide_credits', '1');
   if ($('f-hide-settled').checked) p.set('hide_settled', '1');
   if ($('f-due').checked) p.set('due_only', '1');
@@ -47,18 +49,16 @@ function filterParams() {
 }
 
 // Cool green through amber to red — position on the ladder, not arbitrary hues.
-const BAND_COLORS = {
-  'Not Due': '#2f9e6b',
-  '1-30': '#8bbf3f',
-  '31-60': '#d4b026',
-  '61-90': '#e39a22',
-  '91-179': '#e07a1f',
-  '180-269': '#d55b26',
-  '270-364': '#c43d2f',
-  '365-545': '#a82a33',
-  '546+': '#7d1d2c',
-};
-const bandColor = (b) => BAND_COLORS[b] || (/^\d+-/.test(b) ? '#c43d2f' : '#7d1d2c');
+// Ramp by index rather than a fixed per-key map so any aging scheme (whatever
+// its band keys are) gets a sensible gradient, not one flat color.
+const COLOR_RAMP = ['#8bbf3f', '#d4b026', '#e39a22', '#e07a1f', '#d55b26', '#c43d2f', '#a82a33', '#7d1d2c'];
+function bandColor(b, idx, total) {
+  if (b === 'Not Due') return '#2f9e6b';
+  const n = Math.max(total, 1);
+  const pos = n <= 1 ? 1 : idx / (n - 1);
+  const i = Math.min(COLOR_RAMP.length - 1, Math.max(0, Math.round(pos * (COLOR_RAMP.length - 1))));
+  return COLOR_RAMP[i];
+}
 
 // --------------------------------------------------------------- data loading
 
@@ -73,6 +73,10 @@ async function bootstrap() {
   $('threshold').value = state.boot.threshold;
   setScope(state.boot.scope || 'all', false);
   setBasis(state.boot.basis || 'due', false);
+
+  $('scheme-switch').innerHTML = (state.boot.schemes || [])
+    .map((s) => `<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('');
+  setScheme(state.boot.scheme || 'standard', false);
 
   const sel = $('f-status');
   sel.innerHTML = '<option value="">All statuses</option>' +
@@ -145,6 +149,18 @@ function setBasis(basis, persist = true) {
   }
 }
 
+function setScheme(scheme, persist = true) {
+  state.scheme = scheme;
+  $('scheme-switch').value = scheme;
+  if (persist) {
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheme }),
+    }).then(load);
+  }
+}
+
 function updateSubtitle() {
   const last = state.boot.last_sync;
   const t = $('threshold').value;
@@ -191,6 +207,7 @@ async function load() {
   syncBandFilter(data.grand_totals.bands);
   syncTermFilter(data.terms);
   syncAreaFilter(data.areas);
+  syncSalespersonList(data.salespeople);
   $('btn-export').href = '/api/export.xlsx?' + p.toString();
 
   renderKpis();
@@ -210,6 +227,15 @@ function syncAreaFilter(areas) {
   sel.innerHTML = '<option value="">All areas</option>' + areas.map((a) =>
     `<option value="${esc(a.area)}">${esc(a.area)} (${a.count})</option>`).join('');
   if (areas.some((a) => a.area === current)) sel.value = current;
+}
+
+function syncSalespersonList(names) {
+  if (!names) return;
+  const dl = $('f-salesperson-list');
+  const wanted = names.join('|');
+  if (dl.dataset.names === wanted) return;
+  dl.dataset.names = wanted;
+  dl.innerHTML = names.map((n) => `<option value="${esc(n)}">`).join('');
 }
 
 function syncTermFilter(terms) {
@@ -296,11 +322,13 @@ function renderAgingStrip() {
   if (!span) { $('aging-strip').innerHTML = ''; return; }
 
   const active = $('f-band').value;
+  const notDueOffset = bands[0] === 'Not Due' ? 1 : 0;
+  const overdueCount = bands.length - notDueOffset;
   const segments = bands.map((b, i) => {
     const pct = (magnitudes[i] / span) * 100;
     if (pct <= 0) return '';
     const amount = t.band_totals[i];
-    return `<span style="width:${pct}%;background:${bandColor(b)};opacity:${
+    return `<span style="width:${pct}%;background:${bandColor(b, i - notDueOffset, overdueCount)};opacity:${
       active && active !== b ? .3 : 1}" title="${esc(state.bandLabels[b] || b)}: ${fmt(amount)}"
       data-band="${esc(b)}"></span>`;
   }).join('');
@@ -310,7 +338,7 @@ function renderAgingStrip() {
     if (!amount) return '';
     const pct = t.aged_total ? Math.round((amount / t.aged_total) * 100) : 0;
     return `<span class="item ${active === b ? 'active' : ''}" data-band="${esc(b)}">
-      <i class="swatch" style="background:${bandColor(b)}"></i>
+      <i class="swatch" style="background:${bandColor(b, i - notDueOffset, overdueCount)}"></i>
       ${esc(state.bandLabels[b] || b)}
       <b class="amt ${amount < 0 ? 'neg' : ''}">${compact.format(amount)}</b>
       <em style="font-style:normal;opacity:.6">${pct}%</em>
@@ -374,6 +402,7 @@ const COLUMNS = () => {
     { key: '_rank', label: '#', cls: 'center', sortable: false },
     { key: 'name', label: 'Customer', cls: 'left' },
     { key: 'area', label: 'Area', cls: 'center' },
+    { key: 'salesperson', label: 'Salesperson', cls: 'left' },
     { key: 'term_days', label: 'Terms', cls: 'center' },
     { key: 'aged_docs', label: 'Docs', cls: 'center' },
     { key: 'oldest_days', label: 'Oldest', cls: 'center' },
@@ -444,6 +473,9 @@ function renderTable() {
         c.settled ? '<span class="co-chip settled-chip" title="Owes nothing — an old invoice cancelled by an unapplied credit">settled</span>' : ''}${
         c.agency ? '<span class="co-chip agency-chip" title="Handed to a collection agency">agency</span>' : ''}</td>
       <td class="center term">${esc(c.area || '—')}</td>
+      <td class="left" title="${c.salesperson_override ? `Overridden — Odoo: ${esc(c.salesperson_synced) || 'none'}` : ''}">${
+        c.salesperson ? esc(c.salesperson) : '<span class="note-count">—</span>'}${
+        c.salesperson_override ? ' <span class="note-count">(override)</span>' : ''}</td>
       <td class="center term">${c.term_days != null ? c.term_days + 'd'
         : (c.payment_term ? esc(c.payment_term) : '—')}</td>
       <td class="center">${c.aged_docs}</td>
@@ -471,6 +503,7 @@ function renderTable() {
   $('tfoot').innerHTML = rows.length ? `<tr>
     <td class="left"></td>
     <td class="left">${t.customers} customers</td>
+    <td></td>
     <td></td>
     <td></td>
     <td class="center">${t.documents}</td>
@@ -550,6 +583,11 @@ function renderDrawer() {
       <div class="form-grid">
         <div class="field"><label for="d-status">Status</label>
           <select id="d-status">${statusOptions}</select></div>
+        <div class="field"><label for="d-salesperson">Salesperson${
+          c.salesperson_override ? ` <span class="note-count">(overridden — Odoo: ${
+            esc(c.salesperson_synced) || 'none'})</span>` : ''}</label>
+          <input id="d-salesperson" type="text" value="${esc(c.salesperson_override)}"
+            placeholder="${esc(c.salesperson_synced) || 'Not set in Odoo'}"></div>
         <div class="field"><label for="d-owner">Owner</label>
           <input id="d-owner" type="text" value="${esc(c.owner)}" placeholder="Who is chasing this"></div>
         <div class="field"><label for="d-promise">Promised payment date</label>
@@ -601,9 +639,20 @@ function renderDrawer() {
     </div>`;
 
   $('d-agency').addEventListener('change', async (ev) => {
-    await fetch(`/api/agency/${t.partner_id}`, {
+    await fetch(`/api/agency/${c.partner_id}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agency: ev.target.checked }),
+    });
+    await refreshDrawer();
+    load();
+  });
+  // Saves on blur (native `change` behavior for a text input), same as the
+  // agency checkbox above — no separate save button for a single field.
+  // Clearing the field back to empty is how you revert to the Odoo value.
+  $('d-salesperson').addEventListener('change', async (ev) => {
+    await fetch(`/api/customers/${c.partner_id}/salesperson`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ salesperson: ev.target.value }),
     });
     await refreshDrawer();
     load();
@@ -750,6 +799,7 @@ function init() {
   initTableResize();
   $('btn-sync').addEventListener('click', startSync);
   $('threshold').addEventListener('change', saveThreshold);
+  $('scheme-switch').addEventListener('change', () => setScheme($('scheme-switch').value));
   $('drawer-close').addEventListener('click', closeDrawer);
   $('scrim').addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
@@ -762,11 +812,11 @@ function init() {
   const reload = debounce(load, 220);
   $('f-search').addEventListener('input', reload);
   ['f-status', 'f-band', 'f-term', 'f-area', 'f-agency', 'f-min', 'f-owner',
-   'f-hide-credits', 'f-hide-settled', 'f-due', 'f-overdue'].forEach((id) => {
+   'f-salesperson', 'f-hide-credits', 'f-hide-settled', 'f-due', 'f-overdue'].forEach((id) => {
     $(id).addEventListener('input', reload);
   });
   $('f-reset').addEventListener('click', () => {
-    ['f-search', 'f-min', 'f-owner'].forEach((id) => { $(id).value = ''; });
+    ['f-search', 'f-min', 'f-owner', 'f-salesperson'].forEach((id) => { $(id).value = ''; });
     ['f-status', 'f-band', 'f-term', 'f-area', 'f-agency'].forEach((id) => { $(id).value = ''; });
     ['f-hide-credits', 'f-due', 'f-overdue'].forEach((id) => { $(id).checked = false; });
     $('f-hide-settled').checked = true;
@@ -782,7 +832,8 @@ init();
 
 // =================================================================== collections
 
-const coll = { data: null, sort: { key: 'total', dir: -1 } };
+const coll = { data: null, sort: { key: 'total', dir: -1 }, receiptsOffset: 0 };
+const RECEIPTS_PAGE = 100;
 
 function cFilters() {
   const p = new URLSearchParams();
@@ -876,11 +927,13 @@ function cBarTable(rows, total, onClick) {
 }
 
 async function loadCollections() {
+  coll.receiptsOffset = 0;
   const p = cFilters();
   $('c-export').href = '/api/collections/export.xlsx?' + p;
   const d = await (await fetch('/api/collections?' + p)).json();
   if (d.error) { banner(d.error, true); return; }
   coll.data = d;
+  loadReceipts();
 
   const f = d.facets || {};
   if (f.salespeople && !$('c-user').dataset.filled) {
@@ -970,7 +1023,8 @@ async function loadCollections() {
     el.addEventListener('mousemove', (ev) => cTip.show(el.dataset.ctip, ev));
     el.addEventListener('mouseleave', () => cTip.hide());
   });
-  // Clicking a salesperson filters the whole view to them.
+  // Clicking a salesperson filters the whole view to them, including the
+  // receipts list below — that's the point: see exactly what they collected.
   $('c-body').querySelectorAll('.card').forEach((card) => {
     if (!card.querySelector('h3').textContent.includes('salesperson')) return;
     card.querySelectorAll('tr[data-key]').forEach((tr) => {
@@ -978,8 +1032,55 @@ async function loadCollections() {
       tr.addEventListener('click', () => {
         $('c-user').value = $('c-user').value === tr.dataset.key ? '' : tr.dataset.key;
         loadCollections();
+        $('c-receipts-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     });
+  });
+}
+
+async function loadReceipts() {
+  const p = cFilters();
+  p.set('limit', RECEIPTS_PAGE);
+  p.set('offset', coll.receiptsOffset);
+  const d = await (await fetch('/api/collections/receipts?' + p)).json();
+  coll.receiptsData = d;
+  renderReceipts();
+}
+
+function renderReceipts() {
+  const d = coll.receiptsData;
+  if (!d) return;
+  const salesperson = $('c-user').value;
+  $('c-receipts-title').textContent = salesperson ? `Receipts — ${salesperson}` : 'Receipts';
+  $('c-receipts-clear').classList.toggle('hidden', !salesperson);
+
+  $('c-receipts-body').innerHTML = d.rows.length ? d.rows.map((r) => `
+    <tr>
+      <td class="left">${esc(cDay(r.date))}</td>
+      <td class="left">${esc(r.doc) || '—'}</td>
+      <td class="left" dir="auto">${esc(r.customer)}</td>
+      <td class="left">${esc(r.salesperson) || '—'}</td>
+      <td class="left">${esc(r.area) || '—'}</td>
+      <td class="left">${r.invoice ? esc(r.invoice)
+        : '<span class="note-count">unapplied</span>'}</td>
+      <td class="left">${esc(r.journal)}</td>
+      <td>${fmt(r.amount)}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="8" class="left"><span class="note-count">No receipts match these filters.</span></td></tr>';
+
+  const from = d.total ? coll.receiptsOffset + 1 : 0;
+  const to = Math.min(coll.receiptsOffset + RECEIPTS_PAGE, d.total);
+  $('c-receipts-pager').innerHTML = `
+    <button class="btn btn-ghost btn-sm" id="c-receipts-prev" ${coll.receiptsOffset === 0 ? 'disabled' : ''}>← Prev</button>
+    <span>${from}–${to} of ${d.total}</span>
+    <button class="btn btn-ghost btn-sm" id="c-receipts-next" ${to >= d.total ? 'disabled' : ''}>Next →</button>`;
+  $('c-receipts-prev').addEventListener('click', () => {
+    coll.receiptsOffset = Math.max(0, coll.receiptsOffset - RECEIPTS_PAGE);
+    loadReceipts();
+  });
+  $('c-receipts-next').addEventListener('click', () => {
+    coll.receiptsOffset += RECEIPTS_PAGE;
+    loadReceipts();
   });
 }
 
@@ -1056,6 +1157,7 @@ function switchView(view) {
   document.querySelector('.threshold').classList.toggle('hidden', view !== 'receivables');
   $('basis-wrap').classList.toggle('hidden', view !== 'receivables');
   $('scope-switch').classList.toggle('hidden', view !== 'receivables');
+  $('scheme-switch').classList.toggle('hidden', view !== 'receivables');
   if (view === 'collections' && !coll.data) loadCollections();
   if (location.hash.slice(1) !== view) history.replaceState(null, '', `#${view}`);
 }
@@ -1079,6 +1181,10 @@ function switchView(view) {
       }
       loadCollections();
     }));
+  $('c-receipts-clear').addEventListener('click', () => {
+    $('c-user').value = '';
+    loadCollections();
+  });
   $('c-reset').addEventListener('click', () => {
     ['c-q', 'c-user', 'c-journal', 'c-area', 'c-agency', 'c-applied']
       .forEach((id) => { $(id).value = ''; });

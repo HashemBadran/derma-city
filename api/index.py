@@ -35,6 +35,20 @@ import db
 import export
 import odoo_sync
 
+# Run at import time so most cold starts pay this cost once, up front — but
+# never let it take the whole function down. A Turso hiccup (bad token,
+# paused database, wrong URL) used to raise here, which crashes the import
+# itself and turns every route into an opaque FUNCTION_INVOCATION_FAILED
+# with no diagnostic. Deferring the failure to request time means each
+# request instead gets a real 503 explaining what's wrong, and the next
+# cold start simply retries db.init() on its own.
+DB_INIT_ERROR = None
+try:
+    db.init()
+except Exception as exc:
+    DB_INIT_ERROR = str(exc)
+    traceback.print_exc()
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 
@@ -147,6 +161,17 @@ def basis_of(params, conn=None):
     return default if default in aging.BASES else aging.DEFAULT_BASIS
 
 
+def scheme_of(params, conn=None):
+    scheme = params.get('scheme')
+    if scheme in aging.SCHEMES:
+        return scheme
+    if conn is not None:
+        stored = db.get_setting(conn, 'scheme', '')
+        if stored in aging.SCHEMES:
+            return stored
+    return CONFIG.get('default_scheme', aging.DEFAULT_SCHEME)
+
+
 def filter_customers(customers, params):
     """Apply the screen's filters. Kept server-side so the export matches the view."""
     q = (params.get('q') or '').strip().lower()
@@ -154,6 +179,7 @@ def filter_customers(customers, params):
     band = params.get('band') or ''
     term = (params.get('term') or '').strip()
     owner = (params.get('owner') or '').strip().lower()
+    salesperson = (params.get('salesperson') or '').strip().lower()
     try:
         minimum = float(params.get('min') or 0)
     except ValueError:
@@ -173,6 +199,8 @@ def filter_customers(customers, params):
         if status and c['status'] != status:
             continue
         if owner and owner not in (c['owner'] or '').lower():
+            continue
+        if salesperson and salesperson not in (c.get('salesperson') or '').lower():
             continue
         if minimum and c['aged_total'] < minimum:
             continue
@@ -332,6 +360,8 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self._path()
         params = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        if DB_INIT_ERROR:
+            return self._error(503, f'Database unavailable: {DB_INIT_ERROR}')
         try:
             if path == '/api/bootstrap':
                 return self.api_bootstrap()
@@ -367,6 +397,8 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self._path()
+        if DB_INIT_ERROR:
+            return self._error(503, f'Database unavailable: {DB_INIT_ERROR}')
         try:
             if path == '/api/sync':
                 return self.api_sync_trigger()
@@ -385,6 +417,9 @@ class handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r'/api/customers/(\d+)/followup', path)
             if match:
                 return self.api_save_followup(int(match.group(1)))
+            match = re.fullmatch(r'/api/customers/(\d+)/salesperson', path)
+            if match:
+                return self.api_set_salesperson(int(match.group(1)))
             match = re.fullmatch(r'/api/customers/(\d+)/notes', path)
             if match:
                 return self.api_add_note(int(match.group(1)))
@@ -417,6 +452,8 @@ class handler(BaseHTTPRequestHandler):
                 'threshold': current_threshold(conn),
                 'scope': scope_of({}, conn),
                 'basis': basis_of({}, conn),
+                'scheme': scheme_of({}, conn),
+                'schemes': [{'key': k, 'label': v['label']} for k, v in aging.SCHEMES.items()],
                 'statuses': [{'key': k, 'label': v} for k, v in db.STATUSES],
                 'has_data': db.has_data(conn),
                 'last_sync': dict(last) if last else None,
@@ -433,11 +470,12 @@ class handler(BaseHTTPRequestHandler):
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
+            scheme = scheme_of(params, conn)
             company = company_of(params, conn)
             everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
                                              area=params.get('area') or None,
-                                             basis=basis_of(params, conn))
+                                             basis=basis_of(params, conn), scheme=scheme)
         finally:
             conn.close()
 
@@ -455,6 +493,7 @@ class handler(BaseHTTPRequestHandler):
             'attention': attention_items(everything),
             'terms': term_summary(everything),
             'areas': area_summary(everything),
+            'salespeople': sorted({c['salesperson'] for c in everything if c.get('salesperson')}),
             'agency': {
                 'count': sum(1 for c in everything if c.get('agency')),
                 'balance': round(sum(c['total_open'] for c in everything
@@ -462,7 +501,7 @@ class handler(BaseHTTPRequestHandler):
                 'overdue': round(sum(c['overdue_total'] for c in everything
                                      if c.get('agency')), 2),
             },
-            'band_labels': {b: aging.band_label(b) for b in totals['bands']},
+            'band_labels': {b: aging.band_label(b, scheme) for b in totals['bands']},
         })
 
     def api_customer_detail(self, partner_id, params):
@@ -470,10 +509,11 @@ class handler(BaseHTTPRequestHandler):
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
+            scheme = scheme_of(params, conn)
             everything, _ = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                         company_id=company_of(params, conn),
                                         area=params.get('area') or None,
-                                        basis=basis_of(params, conn))
+                                        basis=basis_of(params, conn), scheme=scheme)
             customer = next((c for c in everything if c['partner_id'] == partner_id), None)
             if customer is None:
                 return self._error(404, 'Customer has no items in the current view')
@@ -607,6 +647,33 @@ class handler(BaseHTTPRequestHandler):
             conn.close()
         self._json({'followup': dict(row)})
 
+    def api_set_salesperson(self, partner_id):
+        """Local override of the Odoo-synced salesperson. An empty string clears
+        the override and reverts the customer to whatever Odoo says on the next
+        sync — Odoo itself is never written to.
+        """
+        payload = self._body()
+        override = (payload.get('salesperson') or '').strip()
+        conn = db.connect()
+        try:
+            db.ensure_followup(conn, partner_id)
+            conn.execute(
+                'UPDATE followups SET salesperson_override = ?, updated_at = ?'
+                ' WHERE partner_id = ?',
+                [override, datetime.now().isoformat(timespec='seconds'), partner_id],
+            )
+            synced = conn.execute(
+                'SELECT salesperson FROM customers WHERE partner_id = ?', [partner_id]
+            ).fetchone()
+        finally:
+            conn.close()
+        self._json({
+            'partner_id': partner_id,
+            'salesperson_override': override,
+            'salesperson_synced': (synced['salesperson'] if synced else '') or '',
+            'salesperson': override or (synced['salesperson'] if synced else '') or '',
+        })
+
     def api_add_note(self, partner_id):
         payload = self._body()
         body = (payload.get('body') or '').strip()
@@ -660,25 +727,32 @@ class handler(BaseHTTPRequestHandler):
                 if payload['basis'] not in aging.BASES:
                     return self._error(400, 'Aging basis must be "due" or "invoice"')
                 db.set_setting(conn, 'aging_basis', payload['basis'])
+            if 'scheme' in payload:
+                if payload['scheme'] not in aging.SCHEMES:
+                    return self._error(400, 'Unknown aging scheme')
+                db.set_setting(conn, 'scheme', payload['scheme'])
             threshold = current_threshold(conn)
             scope = scope_of({}, conn)
             basis = basis_of({}, conn)
+            scheme = scheme_of({}, conn)
             company = company_of({}, conn)
         finally:
             conn.close()
         self._json({'threshold': threshold, 'scope': scope, 'basis': basis,
-                    'company_id': company or ''})
+                    'scheme': scheme, 'company_id': company or ''})
 
     def api_export(self, params):
         conn = db.connect()
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
+            scheme = scheme_of(params, conn)
+            basis = basis_of(params, conn)
             company = company_of(params, conn)
             everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
                                              company_id=company,
                                              area=params.get('area') or None,
-                                             basis=basis_of(params, conn))
+                                             basis=basis, scheme=scheme)
             filtered = filter_customers(everything, params)
             wb = export.build(filtered, recompute_totals(filtered, totals),
                               company_label(company, CONFIG),
@@ -692,6 +766,10 @@ class handler(BaseHTTPRequestHandler):
         wb.save(buf)
         stamp = datetime.now().strftime('%Y-%m-%d')
         label = 'AllOpen' if scope == 'all' else f'Overdue{threshold}plus'
+        if scheme != aging.DEFAULT_SCHEME:
+            label += f'_{scheme}'
+        if basis != aging.DEFAULT_BASIS:
+            label += '_InvDate'
         name = f'Receivables_{label}_{stamp}.xlsx'
         self._send(
             200, buf.getvalue(),

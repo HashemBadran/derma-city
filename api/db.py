@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS customers (
     area    TEXT DEFAULT '',
     payment_term TEXT DEFAULT '',
     term_days    INTEGER DEFAULT NULL,
-    credit_limit REAL DEFAULT 0
+    credit_limit REAL DEFAULT 0,
+    salesperson_id INTEGER DEFAULT 0,
+    salesperson    TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -80,7 +82,8 @@ CREATE TABLE IF NOT EXISTS followups (
     promise_date     TEXT DEFAULT '',
     promise_amount   REAL DEFAULT 0,
     next_action_date TEXT DEFAULT '',
-    updated_at       TEXT DEFAULT ''
+    updated_at       TEXT DEFAULT '',
+    salesperson_override TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -123,6 +126,31 @@ CREATE INDEX IF NOT EXISTS idx_coll_partner ON collections(partner_id);
 CREATE INDEX IF NOT EXISTS idx_coll_user    ON collections(user_id);
 CREATE INDEX IF NOT EXISTS idx_coll_company ON collections(company_id);
 CREATE INDEX IF NOT EXISTS idx_coll_area    ON collections(area);
+
+-- A local salesperson override (followups.salesperson_override) is set per
+-- customer, not per collection row, so it has to be applied at read time
+-- rather than baked into `collections` at sync -- otherwise it would go
+-- stale the moment someone changes it until the next Odoo sync. Every read
+-- in collections_data.py goes through this view instead of the raw table so
+-- the override takes effect immediately everywhere: totals, the salesperson
+-- breakdown, and the receipts list.
+--
+-- `user_id` is cast to TEXT and, when overridden, replaced with the override
+-- string itself rather than a fixed sentinel -- grouping/filtering by a
+-- shared "overridden" placeholder would silently merge unrelated customers
+-- who happen to both have *some* override into one bucket. Using the actual
+-- override text as the key keeps two different overridden salespeople
+-- distinct, exactly like two different real Odoo users already were.
+CREATE VIEW IF NOT EXISTS collections_effective AS
+SELECT
+    c.id, c.line_id, c.company_id, c.company, c.date, c.month,
+    c.partner_id, c.customer, c.area, c.doc, c.ref, c.journal,
+    c.invoice, c.invoice_date, c.invoice_journal, c.opening,
+    COALESCE(NULLIF(f.salesperson_override, ''), CAST(c.user_id AS TEXT)) AS user_id,
+    COALESCE(NULLIF(f.salesperson_override, ''), c.salesperson) AS salesperson,
+    c.applied, c.amount
+FROM collections c
+LEFT JOIN followups f ON f.partner_id = c.partner_id;
 
 -- Customers handed to a collection agency. Local only: Odoo has no field for
 -- this and a sync must never clear it.
@@ -259,13 +287,63 @@ def connect():
     return Conn(client)
 
 
+# Columns added to these tables after they already held real production data —
+# CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a new
+# column needs an explicit ALTER TABLE instead, the same way the collector app
+# migrates old databases forward without losing anyone's history.
+MIGRATIONS = {
+    'customers': [
+        ('salesperson_id', 'INTEGER DEFAULT 0'),
+        ('salesperson', "TEXT DEFAULT ''"),
+    ],
+    'followups': [
+        ('salesperson_override', "TEXT DEFAULT ''"),
+    ],
+}
+
+# Bump whenever SCHEMA or MIGRATIONS changes, so the next cold start after a
+# deploy re-runs init() once to pick it up.
+SCHEMA_VERSION = '2'
+
+
 def init():
-    """Create every table and index if it does not already exist."""
-    statements = [st.strip() for st in SCHEMA.split(';') if st.strip()]
+    """Create every table and index if it does not already exist, and add any
+    columns an older database is missing.
+
+    Called at import time on every cold start (see api/index.py) — the
+    stored schema-version check below collapses the steady-state case (every
+    cold start except the one right after a schema change) to a single round
+    trip instead of ~20 sequential PRAGMA/CREATE statements.
+    """
     conn = connect()
     try:
-        for st in statements:
+        try:
+            if get_setting(conn, 'schema_version') == SCHEMA_VERSION:
+                return
+        except Exception:
+            pass  # fresh database — settings doesn't exist yet, fall through
+
+        statements = [st.strip() for st in SCHEMA.split(';') if st.strip()]
+        tables = [st for st in statements if 'CREATE INDEX' not in st.upper()]
+        indexes = [st for st in statements if 'CREATE INDEX' in st.upper()]
+
+        # CREATE VIEW IF NOT EXISTS is a no-op against an existing view, same
+        # as CREATE TABLE — so a changed view definition needs the old one
+        # dropped first, or it would keep running the stale SQL forever.
+        conn.execute('DROP VIEW IF EXISTS collections_effective')
+        for st in tables:
             conn.execute(st)
+        for table, columns in MIGRATIONS.items():
+            existing = {r['name'] for r in conn.execute(f'PRAGMA table_info({table})', []).fetchall()}
+            if not existing:
+                continue
+            for name, spec in columns:
+                if name not in existing:
+                    conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {spec}')
+        for st in indexes:
+            conn.execute(st)
+
+        set_setting(conn, 'schema_version', SCHEMA_VERSION)
     finally:
         conn.close()
 

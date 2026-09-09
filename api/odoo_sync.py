@@ -130,15 +130,68 @@ def sync(config, progress=None):
     version = odoo.connect()
 
     say('Fetching open receivable lines…')
-    domain = [
+    open_domain = [
         ('parent_state', '=', 'posted'),
         ('account_id.account_type', '=', 'asset_receivable'),
         ('amount_residual', '!=', 0),
         ('company_id', 'in', company_ids),
     ]
-    lines = _fetch_all(odoo, 'account.move.line', domain, LINE_FIELDS, context)
-    say(f'Got {len(lines)} open lines. Fetching customer details…')
+    lines = _fetch_all(odoo, 'account.move.line', open_domain, LINE_FIELDS, context)
+    say(f'Got {len(lines)} open lines. Finding every DC customer, including zero-balance ones…')
 
+    # Every customer this company has ever invoiced, not just the ones with an
+    # open balance right now — so someone fully paid off (or who never owed
+    # anything overdue in the first place) still shows up in the book at
+    # SAR 0 instead of just being absent. A minimal field set keeps this
+    # cheap even though, unlike `lines` above, it is not bounded by date and
+    # can span the account's whole history.
+    all_domain = [
+        ('parent_state', '=', 'posted'),
+        ('account_id.account_type', '=', 'asset_receivable'),
+        ('company_id', 'in', company_ids),
+    ]
+    all_lines = _fetch_all(
+        odoo, 'account.move.line', all_domain,
+        ['partner_id', 'company_id', 'date', 'move_id'], context,
+    )
+    say(f'{len(all_lines)} receivable lines total. Fetching invoice salespeople…')
+
+    # This Odoo instance does not use res.partner.user_id (the customer-level
+    # "Salesperson" field is essentially unset) — the salesperson actually
+    # lives on each invoice instead, and it is picked per customer as the most
+    # recent open invoice's salesperson. A migrated opening balance's
+    # invoice_user_id is whoever ran the import, not a real assigned rep, so
+    # (same as collections_data.py's cutoff) an invoice dated on/after
+    # collections_from_invoice_date is preferred over an older one even if
+    # the older one is technically more recent among a tied set.
+    # From all_lines, not just the open ones, so a fully-paid customer still
+    # gets a salesperson shown instead of a blank column.
+    move_ids = sorted({l['move_id'][0] for l in all_lines if l.get('move_id')})
+    moves = []
+    move_failed = []
+    for i in range(0, len(move_ids), 300):
+        moves.extend(_read_or_bisect(
+            odoo, 'account.move', move_ids[i:i + 300],
+            ['id', 'invoice_user_id', 'invoice_date'], context, say, move_failed,
+        ))
+    move_by_id = {m['id']: m for m in moves}
+    cutoff = config.get('collections_from_invoice_date', '2026-01-01')
+
+    salesperson_by_partner = {}
+    for l in all_lines:
+        if not l.get('partner_id') or not l.get('move_id'):
+            continue
+        move = move_by_id.get(l['move_id'][0])
+        if not move or not move.get('invoice_user_id'):
+            continue
+        inv_date = move.get('invoice_date') or l['date']
+        pid = l['partner_id'][0]
+        key = (inv_date >= cutoff, inv_date)
+        current = salesperson_by_partner.get(pid)
+        if current is None or key > current[0]:
+            salesperson_by_partner[pid] = (key, move['invoice_user_id'])
+
+    say('Fetching customer details…')
     partner_ids = sorted({l['partner_id'][0] for l in lines if l['partner_id']})
     partners = []
     restricted_partner_ids = []
@@ -147,6 +200,30 @@ def sync(config, progress=None):
             odoo, 'res.partner', partner_ids[i:i + 300], PARTNER_FIELDS, context,
             say, restricted_partner_ids,
         ))
+    # Customers who show up in all_lines (ever invoiced) but never in lines
+    # (currently open) have nothing owing anywhere right now — paid in full.
+    open_partner_ids = set(partner_ids)
+    settled_info = {}  # partner_id -> (company_id, most recent invoice date)
+    for l in all_lines:
+        if not l.get('partner_id'):
+            continue
+        pid = l['partner_id'][0]
+        if pid in open_partner_ids:
+            continue
+        cid = l['company_id'][0] if l.get('company_id') else 0
+        current = settled_info.get(pid)
+        if current is None or l['date'] > current[1]:
+            settled_info[pid] = (cid, l['date'])
+
+    settled_partner_ids = sorted(settled_info)
+    settled_partners = []
+    for i in range(0, len(settled_partner_ids), 300):
+        settled_partners.extend(_read_or_bisect(
+            odoo, 'res.partner', settled_partner_ids[i:i + 300], PARTNER_FIELDS, context,
+            say, restricted_partner_ids,
+        ))
+    if settled_partners:
+        say(f'{len(settled_partners)} customer(s) with no open balance are still shown at SAR 0.')
     if restricted_partner_ids:
         say(f'{len(restricted_partner_ids)} contact(s) skipped for access reasons: '
             f'{restricted_partner_ids} — their receivable lines are still synced under a '
@@ -163,9 +240,11 @@ def sync(config, progress=None):
             conn.execute('DELETE FROM customers')
 
             rows = []
-            for p in partners:
+            for p in partners + settled_partners:
                 term = p.get('property_payment_term_id')
                 term_label = term[1] if term else ''
+                best = salesperson_by_partner.get(p['id'])
+                salesperson = best[1] if best else None
                 rows.append((
                     p['id'], p.get('name') or '', p.get('phone') or '',
                     p.get('mobile') or '', p.get('email') or '', p.get('vat') or '',
@@ -176,6 +255,8 @@ def sync(config, progress=None):
                     (p['region_id'][1] if p.get('region_id') else UNASSIGNED_AREA),
                     term_label, term_days(term_label),
                     p.get('credit_limit') or 0.0,
+                    salesperson[0] if salesperson else 0,
+                    salesperson[1] if salesperson else '',
                 ))
             # Placeholder rows for contacts the sync user can't read, so the
             # aging JOIN (customers JOIN documents) still picks up their open
@@ -183,12 +264,13 @@ def sync(config, progress=None):
             for pid in restricted_partner_ids:
                 rows.append((
                     pid, f'(access restricted — contact #{pid})', '', '', '', '',
-                    '', '', UNASSIGNED_AREA, '', None, 0.0,
+                    '', '', UNASSIGNED_AREA, '', None, 0.0, 0, '',
                 ))
             conn.executemany(
                 'INSERT INTO customers (partner_id, name, phone, mobile, email, vat,'
-                ' city, company, area, payment_term, term_days, credit_limit)'
-                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                ' city, company, area, payment_term, term_days, credit_limit,'
+                ' salesperson_id, salesperson)'
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 rows,
             )
             # A receivable line with no partner cannot be chased, but it should not
@@ -201,11 +283,7 @@ def sync(config, progress=None):
                 ('(no customer assigned)', UNASSIGNED_AREA),
             )
 
-            conn.executemany(
-                'INSERT INTO documents (line_id, partner_id, company_id, company,'
-                ' doc, ref, journal, inv_date, due_date, original, residual)'
-                ' VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                [(l['id'],
+            document_rows = [(l['id'],
                   l['partner_id'][0] if l['partner_id'] else 0,
                   l['company_id'][0] if l.get('company_id') else 0,
                   labels.get(str(l['company_id'][0]), '') if l.get('company_id') else '',
@@ -215,14 +293,31 @@ def sync(config, progress=None):
                   l['date'],
                   l.get('date_maturity') or l['date'],
                   round(l.get('balance') or 0.0, 2),
-                  round(l.get('amount_residual') or 0.0, 2)) for l in lines],
+                  round(l.get('amount_residual') or 0.0, 2)) for l in lines]
+            # One synthetic zero-balance row per customer settled_info found, so
+            # the aging JOIN (customers JOIN documents) picks them up at SAR 0
+            # instead of a fully-paid customer just vanishing from the book. A
+            # negative line_id can never collide with a real Odoo id (always
+            # positive), and due_date = today keeps it in "not due" everywhere
+            # rather than accidentally inflating an overdue bucket.
+            today = now[:10]
+            document_rows += [(-pid, pid, cid,
+                                labels.get(str(cid), '') if cid else '',
+                                '', '(no open balance — paid in full)', '',
+                                last_date, today, 0.0, 0.0)
+                               for pid, (cid, last_date) in settled_info.items()]
+            conn.executemany(
+                'INSERT INTO documents (line_id, partner_id, company_id, company,'
+                ' doc, ref, journal, inv_date, due_date, original, residual)'
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                document_rows,
             )
 
             residual = round(sum(l.get('amount_residual') or 0.0 for l in lines), 2)
             conn.execute(
                 'INSERT INTO sync_log (synced_at, lines, customers, total_open)'
                 ' VALUES (?,?,?,?)',
-                (now, len(lines), len(partners), residual),
+                (now, len(lines), len(partners) + len(settled_partners), residual),
             )
             collections_data.write(conn, collection_rows)
             db.set_setting(conn, 'last_sync', now)
@@ -234,6 +329,7 @@ def sync(config, progress=None):
         'synced_at': now,
         'lines': len(lines),
         'customers': len(partners),
+        'settled_customers': len(settled_partners),
         'total_open': residual,
         'collection_rows': len(collection_rows),
         'collected': round(sum(r['amount'] for r in collection_rows), 2),

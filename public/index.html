@@ -35,6 +35,7 @@
         <option value="invoice">invoice date</option>
       </select>
     </label>
+    <select id="scheme-switch" title="Aging bucket scheme"></select>
     <button id="btn-sync" class="btn">Refresh from Odoo</button>
     <a id="btn-export" class="btn btn-ghost" href="/api/export.xlsx">Export Excel</a>
     <button id="btn-theme" class="btn btn-icon" title="Toggle theme" aria-label="Toggle theme">◐</button>
@@ -69,6 +70,8 @@
       <select id="f-term"><option value="">All credit terms</option></select>
       <input type="number" id="f-min" placeholder="Min amount" step="1000">
       <input type="text" id="f-owner" placeholder="Owner">
+      <input type="text" id="f-salesperson" list="f-salesperson-list" placeholder="Salesperson…" autocomplete="off">
+      <datalist id="f-salesperson-list"></datalist>
       <label class="check"><input type="checkbox" id="f-overdue"> Has overdue</label>
       <label class="check" title="Customers whose whole balance nets to zero — an old invoice cancelled by an unapplied credit. Nothing to collect.">
         <input type="checkbox" id="f-hide-settled" checked> Hide settled</label>
@@ -127,6 +130,27 @@
 
   <section class="kpis" id="c-kpis"></section>
   <section id="c-body"></section>
+
+  <section class="card" id="c-receipts-panel">
+    <div class="card-head-row">
+      <h3 id="c-receipts-title">Receipts</h3>
+      <button class="btn btn-ghost btn-sm hidden" id="c-receipts-clear">Clear salesperson filter</button>
+    </div>
+    <div class="table-scroll">
+      <table class="docs">
+        <thead>
+          <tr>
+            <th class="left">Date</th><th class="left">Doc</th><th class="left">Customer</th>
+            <th class="left">Salesperson</th><th class="left">Area</th>
+            <th class="left">Invoice</th><th class="left">Journal</th>
+            <th>Amount</th>
+          </tr>
+        </thead>
+        <tbody id="c-receipts-body"></tbody>
+      </table>
+    </div>
+    <div class="pager" id="c-receipts-pager"></div>
+  </section>
 </main>
 
 <aside id="drawer" class="drawer" aria-hidden="true">
