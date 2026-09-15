@@ -207,7 +207,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         '       d.line_id, d.doc, d.ref, d.journal, d.inv_date, d.due_date,'
         '       d.original, d.residual,'
         '       f.status, f.owner, f.promise_date, f.promise_amount,'
-        '       f.next_action_date, f.updated_at, f.salesperson_override,'
+        '       f.next_action_date, f.updated_at, f.salesperson_override, f.name_en,'
         '       (ag.partner_id IS NOT NULL) AS is_agency,'
         '       nt.note_count, nt.last_note_at'
         '  FROM customers c'
@@ -229,6 +229,10 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
             c = customers[pid] = {
                 'partner_id': pid,
                 'name': r['name'],
+                # Odoo has no English-name field on this instance, so this is
+                # purely a local note kept alongside the Odoo-synced (Arabic)
+                # name — never touched by a sync.
+                'name_en': r['name_en'] or '',
                 'phone': r['phone'] or r['mobile'] or '',
                 'email': r['email'] or '',
                 'city': r['city'] or '',

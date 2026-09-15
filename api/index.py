@@ -194,7 +194,8 @@ def filter_customers(customers, params):
 
     out = []
     for c in customers:
-        if q and q not in c['name'].lower() and q not in (c['phone'] or '').lower():
+        if (q and q not in c['name'].lower() and q not in (c.get('name_en') or '').lower()
+                and q not in (c['phone'] or '').lower()):
             continue
         if status and c['status'] != status:
             continue
@@ -420,6 +421,9 @@ class handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r'/api/customers/(\d+)/salesperson', path)
             if match:
                 return self.api_set_salesperson(int(match.group(1)))
+            match = re.fullmatch(r'/api/customers/(\d+)/name_en', path)
+            if match:
+                return self.api_set_name_en(int(match.group(1)))
             match = re.fullmatch(r'/api/customers/(\d+)/notes', path)
             if match:
                 return self.api_add_note(int(match.group(1)))
@@ -673,6 +677,25 @@ class handler(BaseHTTPRequestHandler):
             'salesperson_synced': (synced['salesperson'] if synced else '') or '',
             'salesperson': override or (synced['salesperson'] if synced else '') or '',
         })
+
+    def api_set_name_en(self, partner_id):
+        """English name, kept alongside the Arabic name Odoo syncs. Purely local
+        — there is no Odoo field to fall back to or revert to, unlike the
+        salesperson override above, so an empty string just means "not set".
+        """
+        payload = self._body()
+        name_en = (payload.get('name_en') or '').strip()
+        conn = db.connect()
+        try:
+            db.ensure_followup(conn, partner_id)
+            conn.execute(
+                'UPDATE followups SET name_en = ?, updated_at = ?'
+                ' WHERE partner_id = ?',
+                [name_en, datetime.now().isoformat(timespec='seconds'), partner_id],
+            )
+        finally:
+            conn.close()
+        self._json({'partner_id': partner_id, 'name_en': name_en})
 
     def api_add_note(self, partner_id):
         payload = self._body()

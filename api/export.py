@@ -69,10 +69,11 @@ def build(customers, totals, company_label, currency):
     ws.merge_cells('A2:M2')
 
     total_label = 'Total Open' if all_open else f'Total {threshold}+'
-    headers = (['#', 'Customer', 'Agency', 'Phone', 'City', 'Area', 'Credit Terms', 'Docs', 'Oldest (days)']
+    headers = (['#', 'Customer', 'English Name', 'Agency', 'Phone', 'City', 'Area',
+                'Credit Terms', 'Docs', 'Oldest (days)']
                + bands + [total_label, 'Overdue Portion', 'Total Balance',
                           'Status', 'Owner', 'Promise Date', 'Next Action', 'Notes'])
-    widths = ([5, 44, 10, 18, 14, 13, 15, 8, 14] + [16] * len(bands)
+    widths = ([5, 44, 30, 10, 18, 14, 13, 15, 8, 14] + [16] * len(bands)
               + [18, 18, 18, 17, 16, 14, 14, 8])
     _header(ws, 4, headers, widths)
 
@@ -81,6 +82,7 @@ def build(customers, totals, company_label, currency):
         col = 1
         ws.cell(row=r, column=col, value=idx).alignment = Alignment(horizontal='center'); col += 1
         ws.cell(row=r, column=col, value=c['name']).alignment = Alignment(horizontal='right'); col += 1
+        ws.cell(row=r, column=col, value=c.get('name_en') or ''); col += 1
         ag = ws.cell(row=r, column=col, value='Agency' if c.get('agency') else '')
         ag.alignment = Alignment(horizontal='center')
         if c.get('agency'):
@@ -149,7 +151,7 @@ def build(customers, totals, company_label, currency):
     lbl = ws.cell(row=r, column=2, value=f'TOTAL — {totals["customers"]} customers')
     lbl.font, lbl.fill = Font(bold=True, size=11), TOT_FILL
     lbl.alignment = Alignment(horizontal='right')
-    DOCS_COL, FIRST_BAND_COL = 8, 10
+    DOCS_COL, FIRST_BAND_COL = 9, 11
     ws.cell(row=r, column=DOCS_COL, value=totals['documents']).alignment = \
         Alignment(horizontal='center')
     col = FIRST_BAND_COL

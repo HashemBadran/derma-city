@@ -401,6 +401,7 @@ const COLUMNS = () => {
   return [
     { key: '_rank', label: '#', cls: 'center', sortable: false },
     { key: 'name', label: 'Customer', cls: 'left' },
+    { key: 'name_en', label: 'English Name', cls: 'left' },
     { key: 'area', label: 'Area', cls: 'center' },
     { key: 'salesperson', label: 'Salesperson', cls: 'left' },
     { key: 'term_days', label: 'Terms', cls: 'center' },
@@ -472,6 +473,7 @@ function renderTable() {
         !state.companyId && c.company ? `<span class="co-chip">${esc(c.company)}</span>` : ''}${
         c.settled ? '<span class="co-chip settled-chip" title="Owes nothing — an old invoice cancelled by an unapplied credit">settled</span>' : ''}${
         c.agency ? '<span class="co-chip agency-chip" title="Handed to a collection agency">agency</span>' : ''}</td>
+      <td class="left" dir="auto">${c.name_en ? esc(c.name_en) : '<span class="note-count">—</span>'}</td>
       <td class="center term">${esc(c.area || '—')}</td>
       <td class="left" title="${c.salesperson_override ? `Overridden — Odoo: ${esc(c.salesperson_synced) || 'none'}` : ''}">${
         c.salesperson ? esc(c.salesperson) : '<span class="note-count">—</span>'}${
@@ -503,6 +505,7 @@ function renderTable() {
   $('tfoot').innerHTML = rows.length ? `<tr>
     <td class="left"></td>
     <td class="left">${t.customers} customers</td>
+    <td></td>
     <td></td>
     <td></td>
     <td></td>
@@ -566,6 +569,7 @@ function renderDrawer() {
   $('drawer-body').innerHTML = `
     <div class="d-head">
       <h2 dir="auto">${esc(c.name)}</h2>
+      ${c.name_en ? `<div class="d-name-en">${esc(c.name_en)}</div>` : ''}
       <div class="d-meta">${contactBits.join('<span>·</span>')}</div>
     </div>
 
@@ -583,6 +587,9 @@ function renderDrawer() {
       <div class="form-grid">
         <div class="field"><label for="d-status">Status</label>
           <select id="d-status">${statusOptions}</select></div>
+        <div class="field"><label for="d-name-en">English Name</label>
+          <input id="d-name-en" type="text" value="${esc(c.name_en)}"
+            placeholder="Not set"></div>
         <div class="field"><label for="d-salesperson">Salesperson${
           c.salesperson_override ? ` <span class="note-count">(overridden — Odoo: ${
             esc(c.salesperson_synced) || 'none'})</span>` : ''}</label>
@@ -653,6 +660,15 @@ function renderDrawer() {
     await fetch(`/api/customers/${c.partner_id}/salesperson`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ salesperson: ev.target.value }),
+    });
+    await refreshDrawer();
+    load();
+  });
+  // Same save-on-blur pattern as salesperson above — no separate save button.
+  $('d-name-en').addEventListener('change', async (ev) => {
+    await fetch(`/api/customers/${c.partner_id}/name_en`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name_en: ev.target.value }),
     });
     await refreshDrawer();
     load();

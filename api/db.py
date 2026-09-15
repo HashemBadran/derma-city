@@ -83,7 +83,12 @@ CREATE TABLE IF NOT EXISTS followups (
     promise_amount   REAL DEFAULT 0,
     next_action_date TEXT DEFAULT '',
     updated_at       TEXT DEFAULT '',
-    salesperson_override TEXT DEFAULT ''
+    salesperson_override TEXT DEFAULT '',
+    -- Odoo has no English name field here, and `customers` is wiped and
+    -- rewritten on every sync anyway — so the English name, like the
+    -- salesperson override above, lives here instead, keyed to the customer
+    -- but untouched by a sync.
+    name_en          TEXT DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -298,12 +303,13 @@ MIGRATIONS = {
     ],
     'followups': [
         ('salesperson_override', "TEXT DEFAULT ''"),
+        ('name_en', "TEXT DEFAULT ''"),
     ],
 }
 
 # Bump whenever SCHEMA or MIGRATIONS changes, so the next cold start after a
 # deploy re-runs init() once to pick it up.
-SCHEMA_VERSION = '2'
+SCHEMA_VERSION = '3'
 
 
 def init():

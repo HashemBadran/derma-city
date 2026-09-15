@@ -329,6 +329,7 @@ tfoot td.left { text-align: left; }
 
 .d-head { margin-bottom: 4px; padding-right: 40px; }
 .d-head h2 { font-size: 18px; line-height: 1.3; }
+.d-name-en { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
 .d-meta { font-size: 12.5px; color: var(--text-dim); margin-top: 6px; display: flex; gap: 14px; flex-wrap: wrap; }
 .d-meta a { color: var(--accent); }
 
