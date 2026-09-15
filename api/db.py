@@ -44,6 +44,11 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (
     partner_id INTEGER PRIMARY KEY,
     name    TEXT NOT NULL DEFAULT '',
+    -- Odoo-synced English name, when odoo_sync.py finds a matching field on
+    -- res.partner (see detect_name_en_field there). Wiped and rewritten on
+    -- every sync, same as the rest of this table. followups.name_en is the
+    -- separate local override that survives a sync.
+    name_en TEXT DEFAULT '',
     phone   TEXT DEFAULT '',
     mobile  TEXT DEFAULT '',
     email   TEXT DEFAULT '',
@@ -300,6 +305,7 @@ MIGRATIONS = {
     'customers': [
         ('salesperson_id', 'INTEGER DEFAULT 0'),
         ('salesperson', "TEXT DEFAULT ''"),
+        ('name_en', "TEXT DEFAULT ''"),
     ],
     'followups': [
         ('salesperson_override', "TEXT DEFAULT ''"),
@@ -309,7 +315,7 @@ MIGRATIONS = {
 
 # Bump whenever SCHEMA or MIGRATIONS changes, so the next cold start after a
 # deploy re-runs init() once to pick it up.
-SCHEMA_VERSION = '3'
+SCHEMA_VERSION = '4'
 
 
 def init():

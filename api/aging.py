@@ -200,14 +200,16 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
     # main query as LEFT JOINs instead, since each was keyed on partner_id
     # already. One Turso round trip instead of four.
     rows = conn.execute(
-        'SELECT c.partner_id, c.name, c.phone, c.mobile, c.email, c.city,'
+        'SELECT c.partner_id, c.name, c.name_en AS name_en_synced, c.phone, c.mobile,'
+        '       c.email, c.city,'
         '       c.payment_term, c.term_days, c.credit_limit, c.area,'
         '       c.salesperson_id, c.salesperson,'
         '       d.company_id, d.company,'
         '       d.line_id, d.doc, d.ref, d.journal, d.inv_date, d.due_date,'
         '       d.original, d.residual,'
         '       f.status, f.owner, f.promise_date, f.promise_amount,'
-        '       f.next_action_date, f.updated_at, f.salesperson_override, f.name_en,'
+        '       f.next_action_date, f.updated_at, f.salesperson_override,'
+        '       f.name_en AS name_en_override,'
         '       (ag.partner_id IS NOT NULL) AS is_agency,'
         '       nt.note_count, nt.last_note_at'
         '  FROM customers c'
@@ -229,10 +231,13 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
             c = customers[pid] = {
                 'partner_id': pid,
                 'name': r['name'],
-                # Odoo has no English-name field on this instance, so this is
-                # purely a local note kept alongside the Odoo-synced (Arabic)
-                # name — never touched by a sync.
-                'name_en': r['name_en'] or '',
+                # Odoo-synced English name (see odoo_sync.detect_name_en_field),
+                # when this instance has a matching field; a local override, if
+                # set, always wins for display without touching Odoo — same
+                # pattern as salesperson below.
+                'name_en_synced': r['name_en_synced'] or '',
+                'name_en_override': r['name_en_override'] or '',
+                'name_en': r['name_en_override'] or r['name_en_synced'] or '',
                 'phone': r['phone'] or r['mobile'] or '',
                 'email': r['email'] or '',
                 'city': r['city'] or '',

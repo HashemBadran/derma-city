@@ -587,9 +587,11 @@ function renderDrawer() {
       <div class="form-grid">
         <div class="field"><label for="d-status">Status</label>
           <select id="d-status">${statusOptions}</select></div>
-        <div class="field"><label for="d-name-en">English Name</label>
-          <input id="d-name-en" type="text" value="${esc(c.name_en)}"
-            placeholder="Not set"></div>
+        <div class="field"><label for="d-name-en">English Name${
+          c.name_en_override ? ` <span class="note-count">(overridden — Odoo: ${
+            esc(c.name_en_synced) || 'none'})</span>` : ''}</label>
+          <input id="d-name-en" type="text" value="${esc(c.name_en_override)}"
+            placeholder="${esc(c.name_en_synced) || 'Not set'}"></div>
         <div class="field"><label for="d-salesperson">Salesperson${
           c.salesperson_override ? ` <span class="note-count">(overridden — Odoo: ${
             esc(c.salesperson_synced) || 'none'})</span>` : ''}</label>

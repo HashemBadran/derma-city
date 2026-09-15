@@ -23,6 +23,46 @@ PARTNER_FIELDS = ['id', 'name', 'phone', 'mobile', 'email', 'vat', 'street', 'ci
                   'property_payment_term_id', 'credit_limit', 'company_id',
                   'region_id']
 
+# Matches a custom field's technical name or its label. Instances that keep an
+# Arabic `name` typically add the English name as a Studio field rather than a
+# translation of `name` itself, so this is what detect_name_en_field looks for.
+_NAME_EN_PATTERNS = (
+    re.compile(r'english', re.I),
+    re.compile(r'(?:^|_)name_en(?:$|_)', re.I),
+    re.compile(r'(?:^|_)en_name(?:$|_)', re.I),
+)
+
+
+def detect_name_en_field(odoo, say):
+    """Best-effort discovery of a custom English-name field on res.partner.
+
+    Looks for a text field whose technical name or label mentions "english"
+    (or an en_name/name_en variant) and returns its technical name, or None if
+    nothing matches. Never guesses at a field that isn't there — an instance
+    with no such field just leaves the Odoo-synced English name blank, same
+    as before this existed; the local override in the app still works either
+    way. Run once per sync rather than hardcoded, since Studio field names
+    (x_studio_...) are generated per database and cannot be predicted.
+    """
+    try:
+        fields = odoo.call('res.partner', 'fields_get', [], {'attributes': ['string', 'type']})
+    except Exception as exc:
+        say(f'  Could not inspect res.partner fields for an English-name field: {exc}')
+        return None
+    candidates = sorted(
+        f for f, meta in fields.items()
+        if meta.get('type') == 'char'
+        and any(p.search(f) or p.search(meta.get('string') or '') for p in _NAME_EN_PATTERNS)
+    )
+    if not candidates:
+        say('  No English-name field found on res.partner — set it manually in the app instead.')
+        return None
+    if len(candidates) > 1:
+        say(f'  Multiple possible English-name fields on res.partner {candidates} — using "{candidates[0]}".')
+    else:
+        say(f'  Using res.partner.{candidates[0]} as the Odoo-synced English name.')
+    return candidates[0]
+
 
 def term_days(label):
     """Pull the credit-day count out of a payment term name, for sorting and filtering.
@@ -192,12 +232,14 @@ def sync(config, progress=None):
             salesperson_by_partner[pid] = (key, move['invoice_user_id'])
 
     say('Fetching customer details…')
+    name_en_field = detect_name_en_field(odoo, say)
+    partner_fields = PARTNER_FIELDS + [name_en_field] if name_en_field else PARTNER_FIELDS
     partner_ids = sorted({l['partner_id'][0] for l in lines if l['partner_id']})
     partners = []
     restricted_partner_ids = []
     for i in range(0, len(partner_ids), 300):
         partners.extend(_read_or_bisect(
-            odoo, 'res.partner', partner_ids[i:i + 300], PARTNER_FIELDS, context,
+            odoo, 'res.partner', partner_ids[i:i + 300], partner_fields, context,
             say, restricted_partner_ids,
         ))
     # Customers who show up in all_lines (ever invoiced) but never in lines
@@ -219,7 +261,7 @@ def sync(config, progress=None):
     settled_partners = []
     for i in range(0, len(settled_partner_ids), 300):
         settled_partners.extend(_read_or_bisect(
-            odoo, 'res.partner', settled_partner_ids[i:i + 300], PARTNER_FIELDS, context,
+            odoo, 'res.partner', settled_partner_ids[i:i + 300], partner_fields, context,
             say, restricted_partner_ids,
         ))
     if settled_partners:
@@ -245,8 +287,9 @@ def sync(config, progress=None):
                 term_label = term[1] if term else ''
                 best = salesperson_by_partner.get(p['id'])
                 salesperson = best[1] if best else None
+                name_en = (p.get(name_en_field) or '') if name_en_field else ''
                 rows.append((
-                    p['id'], p.get('name') or '', p.get('phone') or '',
+                    p['id'], p.get('name') or '', name_en, p.get('phone') or '',
                     p.get('mobile') or '', p.get('email') or '', p.get('vat') or '',
                     p.get('city') or '',
                     labels.get(str(p['company_id'][0])) if p.get('company_id') else '',
@@ -263,14 +306,15 @@ def sync(config, progress=None):
             # balances instead of silently dropping that money from the totals.
             for pid in restricted_partner_ids:
                 rows.append((
-                    pid, f'(access restricted — contact #{pid})', '', '', '', '',
-                    '', '', UNASSIGNED_AREA, '', None, 0.0, 0, '',
+                    # name, name_en, phone, mobile, email, vat, city, company
+                    pid, f'(access restricted — contact #{pid})', '', '', '', '', '', '',
+                    '', UNASSIGNED_AREA, '', None, 0.0, 0, '',
                 ))
             conn.executemany(
-                'INSERT INTO customers (partner_id, name, phone, mobile, email, vat,'
+                'INSERT INTO customers (partner_id, name, name_en, phone, mobile, email, vat,'
                 ' city, company, area, payment_term, term_days, credit_limit,'
                 ' salesperson_id, salesperson)'
-                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 rows,
             )
             # A receivable line with no partner cannot be chased, but it should not

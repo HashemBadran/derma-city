@@ -679,23 +679,33 @@ class handler(BaseHTTPRequestHandler):
         })
 
     def api_set_name_en(self, partner_id):
-        """English name, kept alongside the Arabic name Odoo syncs. Purely local
-        — there is no Odoo field to fall back to or revert to, unlike the
-        salesperson override above, so an empty string just means "not set".
+        """Local override of the Odoo-synced English name (see
+        odoo_sync.detect_name_en_field) — same pattern as the salesperson
+        override. An empty string clears the override and reverts the customer
+        to whatever Odoo says on the next sync, or to blank if Odoo has no
+        matching field on this instance.
         """
         payload = self._body()
-        name_en = (payload.get('name_en') or '').strip()
+        override = (payload.get('name_en') or '').strip()
         conn = db.connect()
         try:
             db.ensure_followup(conn, partner_id)
             conn.execute(
                 'UPDATE followups SET name_en = ?, updated_at = ?'
                 ' WHERE partner_id = ?',
-                [name_en, datetime.now().isoformat(timespec='seconds'), partner_id],
+                [override, datetime.now().isoformat(timespec='seconds'), partner_id],
             )
+            synced = conn.execute(
+                'SELECT name_en FROM customers WHERE partner_id = ?', [partner_id]
+            ).fetchone()
         finally:
             conn.close()
-        self._json({'partner_id': partner_id, 'name_en': name_en})
+        self._json({
+            'partner_id': partner_id,
+            'name_en_override': override,
+            'name_en_synced': (synced['name_en'] if synced else '') or '',
+            'name_en': override or (synced['name_en'] if synced else '') or '',
+        })
 
     def api_add_note(self, partner_id):
         payload = self._body()
