@@ -12,10 +12,12 @@
   "port": 5050,
   "collections_from_invoice_date": "2026-01-01",
   "company_ids": [
-    1
+    1,
+    2
   ],
   "company_labels": {
-    "1": "Derma City"
+    "1": "Derma City",
+    "2": "Mastery Avenue"
   },
   "app_label": "Derma City — Receivables & Collections"
 }
