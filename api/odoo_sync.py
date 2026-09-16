@@ -169,6 +169,15 @@ def sync(config, progress=None):
     say('Authenticating…')
     version = odoo.connect()
 
+    # Every company this Odoo login can see, not just the ones already in
+    # config.json — so adding a new one to the app is "read this list, put
+    # its id in company_ids/company_labels", not a guessing game.
+    all_companies = odoo.call('res.company', 'search_read', [[]], {'fields': ['id', 'name']})
+    unconfigured = [c for c in all_companies if c['id'] not in company_ids]
+    if unconfigured:
+        say(f'  Companies visible in Odoo but not yet in config.json: '
+            f'{[(c["id"], c["name"]) for c in unconfigured]}')
+
     say('Fetching open receivable lines…')
     open_domain = [
         ('parent_state', '=', 'posted'),
@@ -379,4 +388,5 @@ def sync(config, progress=None):
         'collected': round(sum(r['amount'] for r in collection_rows), 2),
         'restricted_partners': len(restricted_partner_ids),
         'server_version': version.get('server_version'),
+        'companies': all_companies,
     }
