@@ -172,7 +172,22 @@ def scheme_of(params, conn=None):
     return CONFIG.get('default_scheme', aging.DEFAULT_SCHEME)
 
 
-def filter_customers(customers, params):
+def as_of_of(params):
+    """The report date — 'view the book as it stood on...'. Defaults to today
+    (business timezone) and is never persisted: unlike scope/basis/scheme this
+    is a point-in-time lens on the data, not a standing preference, so a
+    bookmarked link with an explicit date keeps showing that date, and a plain
+    visit always starts on today rather than whatever date someone last set."""
+    raw = params.get('as_of')
+    if raw:
+        try:
+            return aging.parse_date(raw)
+        except (TypeError, ValueError):
+            pass
+    return business_today()
+
+
+def filter_customers(customers, params, as_of=None):
     """Apply the screen's filters. Kept server-side so the export matches the view."""
     q = (params.get('q') or '').strip().lower()
     status = params.get('status') or ''
@@ -190,7 +205,11 @@ def filter_customers(customers, params):
     due_only = params.get('due_only') == '1'
     overdue_only = params.get('overdue_only') == '1'
     over_limit = params.get('over_limit') == '1'
-    today = business_today().isoformat()
+    try:
+        min_age = int(params.get('min_age') or 0)
+    except ValueError:
+        min_age = 0
+    today = (as_of or business_today()).isoformat()
 
     out = []
     for c in customers:
@@ -220,6 +239,14 @@ def filter_customers(customers, params):
         if overdue_only and c['overdue_total'] <= 0:
             continue
         if over_limit and not c.get('over_limit'):
+            continue
+        # Behind the "Over N Days" KPI tiles — always the fixed, invoice-date
+        # milestone aging.build computes (see aging.OVER_DAYS_MILESTONES),
+        # independent of scope/threshold/basis, so this matches the figure the
+        # tile actually showed regardless of what else is filtered right now.
+        # Keyed by int here — only the grand_totals dict sent to the browser
+        # is string-keyed (JSON object keys are always strings anyway).
+        if min_age and not c.get('over_days', {}).get(min_age):
             continue
         if due_only:
             nxt = c['next_action_date'] or ''
@@ -291,9 +318,9 @@ def status_summary(customers):
     return counts
 
 
-def attention_items(customers):
+def attention_items(customers, as_of=None):
     """Promises that have come and gone, and follow-ups that are due."""
-    today = business_today().isoformat()
+    today = (as_of or business_today()).isoformat()
     broken, due = [], []
     for c in customers:
         if c['promise_date'] and c['promise_date'] < today and c['status'] == 'promised':
@@ -470,20 +497,21 @@ class handler(BaseHTTPRequestHandler):
         self._json(payload)
 
     def api_customers(self, params):
+        as_of = as_of_of(params)
         conn = db.connect()
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
             scheme = scheme_of(params, conn)
             company = company_of(params, conn)
-            everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
+            everything, totals = aging.build(conn, threshold, as_of=as_of, scope=scope,
                                              company_id=company,
                                              area=params.get('area') or None,
                                              basis=basis_of(params, conn), scheme=scheme)
         finally:
             conn.close()
 
-        filtered = filter_customers(everything, params)
+        filtered = filter_customers(everything, params, as_of=as_of)
         settled = [c for c in everything if c.get('settled')]
         self._json({
             'customers': [{k: v for k, v in c.items() if k != 'documents'} for c in filtered],
@@ -494,7 +522,7 @@ class handler(BaseHTTPRequestHandler):
             'totals': recompute_totals(filtered, totals),
             'grand_totals': totals,
             'status_summary': status_summary(everything),
-            'attention': attention_items(everything),
+            'attention': attention_items(everything, as_of=as_of),
             'terms': term_summary(everything),
             'areas': area_summary(everything),
             'salespeople': sorted({c['salesperson'] for c in everything if c.get('salesperson')}),
@@ -514,7 +542,7 @@ class handler(BaseHTTPRequestHandler):
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
             scheme = scheme_of(params, conn)
-            everything, _ = aging.build(conn, threshold, as_of=business_today(), scope=scope,
+            everything, _ = aging.build(conn, threshold, as_of=as_of_of(params), scope=scope,
                                         company_id=company_of(params, conn),
                                         area=params.get('area') or None,
                                         basis=basis_of(params, conn), scheme=scheme)
@@ -775,6 +803,7 @@ class handler(BaseHTTPRequestHandler):
                     'scheme': scheme, 'company_id': company or ''})
 
     def api_export(self, params):
+        as_of = as_of_of(params)
         conn = db.connect()
         try:
             threshold = int(params.get('threshold') or current_threshold(conn))
@@ -782,11 +811,11 @@ class handler(BaseHTTPRequestHandler):
             scheme = scheme_of(params, conn)
             basis = basis_of(params, conn)
             company = company_of(params, conn)
-            everything, totals = aging.build(conn, threshold, as_of=business_today(), scope=scope,
+            everything, totals = aging.build(conn, threshold, as_of=as_of, scope=scope,
                                              company_id=company,
                                              area=params.get('area') or None,
                                              basis=basis, scheme=scheme)
-            filtered = filter_customers(everything, params)
+            filtered = filter_customers(everything, params, as_of=as_of)
             wb = export.build(filtered, recompute_totals(filtered, totals),
                               company_label(company, CONFIG),
                               CONFIG.get('currency', 'SAR'))

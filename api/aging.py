@@ -92,10 +92,48 @@ BAND_TITLES_90 = {
     '361+': '361+ days',
 }
 
+
+# Finest ladder: even 30-day bands all the way to a year, then two coarser
+# bands past that — for readers who want to see exactly which month an item
+# fell into rather than a wide 90+/180+ bucket.
+LADDER_MONTHLY = [
+    (1, 30, '1-30'),
+    (31, 60, '31-60'),
+    (61, 90, '61-90'),
+    (91, 120, '91-120'),
+    (121, 150, '121-150'),
+    (151, 180, '151-180'),
+    (181, 210, '181-210'),
+    (211, 240, '211-240'),
+    (241, 270, '241-270'),
+    (271, 300, '271-300'),
+    (301, 360, '301-360'),
+    (361, 450, '361-450'),
+    (451, None, '451+'),
+]
+
+BAND_TITLES_MONTHLY = {
+    NOT_DUE: 'Within terms',
+    '1-30': '1–30 days',
+    '31-60': '1–2 months',
+    '61-90': '2–3 months',
+    '91-120': '3–4 months',
+    '121-150': '4–5 months',
+    '151-180': '5–6 months',
+    '181-210': '6–7 months',
+    '211-240': '7–8 months',
+    '241-270': '8–9 months',
+    '271-300': '9–10 months',
+    '301-360': '10–12 months',
+    '361-450': '1–1.25 years',
+    '451+': 'Over 15 months',
+}
+
 SCHEMES = {
     'standard': {'label': 'Standard bands', 'ladder': LADDER, 'titles': BAND_TITLES},
     'sixty': {'label': '60-day bands', 'ladder': LADDER_60, 'titles': BAND_TITLES_60},
     'ninety': {'label': '90-day bands', 'ladder': LADDER_90, 'titles': BAND_TITLES_90},
+    'monthly': {'label': 'Monthly bands', 'ladder': LADDER_MONTHLY, 'titles': BAND_TITLES_MONTHLY},
 }
 DEFAULT_SCHEME = 'standard'
 
@@ -107,6 +145,15 @@ def parse_date(s):
 
 DEFAULT_BASIS = 'due'
 BASES = ('due', 'invoice')
+
+# Fixed milestones for the "Over N Days" KPI tiles — always read from the
+# invoice date regardless of the view's own aging `basis`, the same way
+# overdue_total is always read from the due date regardless of `scheme`. A
+# reader asking "how much is over 240 days old" means the invoice's age, not
+# whichever basis happens to be selected, and the cutoff has to be exact
+# rather than snapped to whatever band scheme is active (its bands can be 90
+# days wide), so these are summed straight from each document's age.
+OVER_DAYS_MILESTONES = (180, 240, 360)
 
 
 def days_overdue(due_date, as_of=None):
@@ -137,20 +184,29 @@ def band_for(days, scheme=DEFAULT_SCHEME):
     return ladder[-1][2]
 
 
-def visible_bands(threshold, scope='aged', scheme=DEFAULT_SCHEME):
-    """Which columns the view should carry."""
+def visible_band_ranges(threshold, scope='aged', scheme=DEFAULT_SCHEME):
+    """Which columns the view should carry, as (label, low, high) triples —
+    `high` is None for the open-ended last band. Lets a caller (the "Over N
+    Days" KPI tiles, for one) sum whichever bands lie at or past some cutoff
+    without having to parse it back out of the label text."""
     ladder = _ladder(scheme)
     if scope == 'all':
-        return [NOT_DUE] + [label for _, _, label in ladder]
+        return [(NOT_DUE, 0, 0)] + [(label, lo, hi) for lo, hi, label in ladder]
     bands = [(lo, hi, label) for lo, hi, label in ladder if hi is None or hi >= threshold]
     if not bands:
-        return [f'{threshold}+']
+        return [(f'{threshold}+', threshold, None)]
     out = []
     for i, (lo, hi, label) in enumerate(bands):
         if i == 0 and lo < threshold:
+            lo = threshold
             label = f'{threshold}-{hi}' if hi is not None else f'{threshold}+'
-        out.append(label)
+        out.append((label, lo, hi))
     return out
+
+
+def visible_bands(threshold, scope='aged', scheme=DEFAULT_SCHEME):
+    """Which columns the view should carry."""
+    return [label for label, _, _ in visible_band_ranges(threshold, scope, scheme)]
 
 
 def band_label(band, scheme=DEFAULT_SCHEME):
@@ -178,7 +234,8 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
     as_of = as_of or date.today()
     basis = basis if basis in BASES else DEFAULT_BASIS
     include_all = scope == 'all'
-    bands = visible_bands(threshold, scope, scheme)
+    band_ranges = visible_band_ranges(threshold, scope, scheme)
+    bands = [label for label, _, _ in band_ranges]
     band_index = {b: i for i, b in enumerate(bands)}
 
     # Filtering on the document's company, not the customer's: a partner shared
@@ -268,6 +325,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
                 'overdue_total': 0.0,   # strictly past due, whatever the scope
                 'not_due_total': 0.0,
                 'total_open': 0.0,      # every open item, regardless of scope
+                'over_days': {cutoff: 0.0 for cutoff in OVER_DAYS_MILESTONES},
                 'aged_docs': 0,
                 'open_docs': 0,
                 'oldest_days': None,
@@ -280,6 +338,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         # `overdue` follows the due date always, and feeds the money split below.
         age = age_on(r, basis, as_of)
         overdue = days_overdue(r['due_date'], as_of)
+        invoice_age = age if basis == 'invoice' else age_on(r, 'invoice', as_of)
         residual = r['residual']
         c['total_open'] += residual
         c['open_docs'] += 1
@@ -287,6 +346,9 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
             c['overdue_total'] += residual
         else:
             c['not_due_total'] += residual
+        for cutoff in OVER_DAYS_MILESTONES:
+            if invoice_age >= cutoff:
+                c['over_days'][cutoff] += residual
 
         if not (include_all or age >= threshold):
             continue
@@ -323,6 +385,7 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         c['buckets'] = [round(v, 2) for v in c['buckets']]
         for key in ('aged_total', 'overdue_total', 'not_due_total', 'total_open'):
             c[key] = round(c[key], 2)
+        c['over_days'] = {cutoff: round(v, 2) for cutoff, v in c['over_days'].items()}
         if c['oldest_days'] is None:
             c['oldest_days'] = 0
         c['over_limit'] = bool(c['credit_limit']) and c['total_open'] > c['credit_limit']
@@ -337,6 +400,11 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
 
     totals = {
         'bands': bands,
+        # (low, high) per band, same order as `bands`/`band_totals` — lets a
+        # reader sum "everything at least N days old" without parsing the
+        # label text, since that changes shape per scheme (e.g. '271-359' vs
+        # '9-10 months'). `high` is None for the open-ended last band.
+        'band_ranges': [[lo, hi] for _, lo, hi in band_ranges],
         'band_totals': [
             round(sum(c['buckets'][i] for c in included), 2) for i in range(len(bands))
         ],
@@ -344,6 +412,10 @@ def build(conn, threshold, as_of=None, scope='aged', company_id=None,
         'overdue_total': round(sum(c['overdue_total'] for c in included), 2),
         'not_due_total': round(sum(c['not_due_total'] for c in included), 2),
         'total_open': round(sum(c['total_open'] for c in included), 2),
+        # Keyed by cutoff as a string — JSON object keys are always strings,
+        # so {180: ...} would round-trip as {"180": ...} anyway.
+        'over_days': {str(cutoff): round(sum(c['over_days'][cutoff] for c in included), 2)
+                      for cutoff in OVER_DAYS_MILESTONES},
         'customers': len(included),
         'documents': sum(c['aged_docs'] for c in included),
         'threshold': threshold,

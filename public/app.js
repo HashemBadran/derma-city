@@ -7,6 +7,7 @@ const state = {
   bandLabels: {},
   sort: { key: 'aged_total', dir: -1 },
   selected: null,
+  minAgeFilter: 0, // set by clicking an "Over N Days" KPI tile; 0 = off
 };
 
 const $ = (id) => document.getElementById(id);
@@ -31,6 +32,8 @@ function filterParams() {
   p.set('scope', state.scope);
   p.set('basis', state.basis || 'due');
   p.set('scheme', state.scheme);
+  if ($('as-of').value) p.set('as_of', $('as-of').value);
+  if (state.minAgeFilter) p.set('min_age', state.minAgeFilter);
   const q = $('f-search').value.trim();
   if (q) p.set('q', q);
   if ($('f-status').value) p.set('status', $('f-status').value);
@@ -78,6 +81,10 @@ async function bootstrap() {
     .map((s) => `<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('');
   setScheme(state.boot.scheme || 'standard', false);
 
+  // Report date — always starts on today; never remembered between visits
+  // (see as_of_of in index.py).
+  $('as-of').value = state.boot.today;
+
   const sel = $('f-status');
   sel.innerHTML = '<option value="">All statuses</option>' +
     state.boot.statuses.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('');
@@ -123,6 +130,8 @@ function selectCompany(id) {
 
 function setScope(scope, persist = true) {
   state.scope = scope;
+  // The "Over N Days" drill-down tiles only exist in the 'all' KPI row.
+  state.minAgeFilter = 0;
   document.querySelectorAll('.seg[data-scope]').forEach((b) => {
     b.classList.toggle('active', b.dataset.scope === scope);
   });
@@ -262,12 +271,27 @@ function syncBandFilter(bands) {
 
 // --------------------------------------------------------------- rendering
 
+/** Amount at least `cutoff` days old by invoice date — a fixed milestone
+ * aging.build computes server-side (see aging.OVER_DAYS_MILESTONES),
+ * independent of the view's own scheme/threshold/basis. */
+function overAmount(cutoff) {
+  return (state.totals.over_days || {})[cutoff] || 0;
+}
+
+/** Toggle the "Over N Days" drill-down: clicking the active cutoff again
+ * clears it and shows every customer, same as the aging-strip bands. */
+function toggleMinAge(cutoff) {
+  state.minAgeFilter = state.minAgeFilter === cutoff ? 0 : cutoff;
+  load();
+}
+
 function renderKpis() {
   const t = state.totals;
   const g = state.grand;
   const all = state.scope === 'all';
   const filtered = t.customers !== g.customers || Math.abs(t.aged_total - g.aged_total) > 0.01;
   const overdueShare = t.aged_total ? Math.round((t.overdue_total / t.aged_total) * 100) : 0;
+  const drillTip = 'Show the customers behind this figure — click again to show everyone';
 
   const tiles = [`
     <div class="kpi primary">
@@ -284,15 +308,30 @@ function renderKpis() {
   if (all) {
     tiles.push(`
       <div class="kpi">
-        <div class="label">Within Terms</div>
+        <div class="label">Not Yet Late</div>
         <div class="value">${compact.format(t.not_due_total)}</div>
-        <div class="meta">not yet due</div>
+        <div class="meta">inside its payment term</div>
       </div>`, `
       <div class="kpi">
         <div class="label">Overdue</div>
         <div class="value ${t.overdue_total > 0 ? 'neg' : ''}">${compact.format(t.overdue_total)}</div>
         <div class="meta">${overdueShare}% of the book</div>
       </div>`);
+    [180, 240, 360].forEach((cutoff) => {
+      const amount = overAmount(cutoff);
+      const active = state.minAgeFilter === cutoff;
+      // over_days is a fixed, invoice-date milestone (see overAmount) — always
+      // a share of the whole unfiltered book, not whatever the other filters
+      // above have narrowed the view down to.
+      const pct = g.total_open ? Math.round((amount / g.total_open) * 100) : 0;
+      tiles.push(`
+        <div class="kpi drill ${active ? 'active' : ''}" data-cutoff="${cutoff}" title="${esc(drillTip)}">
+          <div class="label">Over ${cutoff} Days</div>
+          <div class="value">${compact.format(amount)}</div>
+          <div class="meta">${pct}% of the book · from the invoice date${
+            active ? ' · shown' : ''}</div>
+        </div>`);
+    });
   } else {
     tiles.push(`
       <div class="kpi">
@@ -311,6 +350,9 @@ function renderKpis() {
     </div>`);
 
   $('kpis').innerHTML = tiles.join('');
+  $('kpis').querySelectorAll('.kpi.drill').forEach((el) => {
+    el.addEventListener('click', () => toggleMinAge(Number(el.dataset.cutoff)));
+  });
 }
 
 function renderAgingStrip() {
@@ -826,6 +868,7 @@ function init() {
     b.addEventListener('click', () => setScope(b.dataset.scope));
   });
   $('aging-basis').addEventListener('change', (e) => setBasis(e.target.value));
+  $('as-of').addEventListener('change', load);
 
   const reload = debounce(load, 220);
   $('f-search').addEventListener('input', reload);
@@ -838,6 +881,7 @@ function init() {
     ['f-status', 'f-band', 'f-term', 'f-area', 'f-agency'].forEach((id) => { $(id).value = ''; });
     ['f-hide-credits', 'f-due', 'f-overdue'].forEach((id) => { $(id).checked = false; });
     $('f-hide-settled').checked = true;
+    state.minAgeFilter = 0;
     load();
   });
 
@@ -1174,6 +1218,7 @@ function switchView(view) {
   $('btn-export').classList.toggle('hidden', view !== 'receivables');
   document.querySelector('.threshold').classList.toggle('hidden', view !== 'receivables');
   $('basis-wrap').classList.toggle('hidden', view !== 'receivables');
+  $('as-of-wrap').classList.toggle('hidden', view !== 'receivables');
   $('scope-switch').classList.toggle('hidden', view !== 'receivables');
   $('scheme-switch').classList.toggle('hidden', view !== 'receivables');
   if (view === 'collections' && !coll.data) loadCollections();

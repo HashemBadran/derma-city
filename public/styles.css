@@ -175,6 +175,9 @@ main { padding: 22px 24px 60px; max-width: 1680px; margin: 0 auto; }
   border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow);
 }
 .kpi.primary { border-color: var(--accent); background: var(--accent-soft); }
+.kpi.drill { cursor: pointer; transition: border-color .12s, background .12s; }
+.kpi.drill:hover { border-color: var(--accent); }
+.kpi.drill.active { border-color: var(--accent); background: var(--accent-soft); }
 .kpi .label {
   font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-dim); font-weight: 600;
