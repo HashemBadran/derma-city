@@ -40,6 +40,7 @@ function filterParams() {
   if ($('f-band').value) p.set('band', $('f-band').value);
   if ($('f-term').value) p.set('term', $('f-term').value);
   if ($('f-area').value) p.set('area', $('f-area').value);
+  if ($('f-group').value) p.set('group', $('f-group').value);
   if ($('f-agency').value) p.set('agency', $('f-agency').value);
   if ($('f-min').value) p.set('min', $('f-min').value);
   if ($('f-owner').value.trim()) p.set('owner', $('f-owner').value.trim());
@@ -88,6 +89,9 @@ async function bootstrap() {
   const sel = $('f-status');
   sel.innerHTML = '<option value="">All statuses</option>' +
     state.boot.statuses.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('');
+
+  $('f-group').innerHTML = '<option value="">All groups</option>' +
+    (state.boot.groups || []).map((g) => `<option value="${g.key}">${esc(g.label)}</option>`).join('');
 
   updateSubtitle();
 }
@@ -212,6 +216,7 @@ async function load() {
   state.terms = data.terms;
   state.settled = data.settled;
   state.agency = data.agency;
+  state.segments = data.segments;
 
   syncBandFilter(data.grand_totals.bands);
   syncTermFilter(data.terms);
@@ -222,6 +227,7 @@ async function load() {
   renderKpis();
   renderAgingStrip();
   renderAttention();
+  renderSegments();
   renderTable();
   updateSubtitle();
 }
@@ -434,6 +440,35 @@ function renderAttention() {
   $('attention').classList.remove('hidden');
   $('attention').querySelectorAll('li[data-pid]').forEach((li) => {
     li.addEventListener('click', () => openDrawer(Number(li.dataset.pid)));
+  });
+}
+
+/** A/B/C sales-classification rollup, from segment_summary in classification.py.
+ * D (no purchases in the trailing 12 months) has no card here — see the
+ * "All groups" filter for reaching them instead. Clicking a card is the same
+ * toggle as an aging-strip band or a KPI drill-down tile. */
+function renderSegments() {
+  const s = state.segments;
+  if (!s) { $('segments').classList.add('hidden'); return; }
+  const active = $('f-group').value;
+  $('segments').innerHTML = ['A', 'B', 'C'].map((cls) => {
+    const g = s[cls];
+    const key = `class_${cls.toLowerCase()}`;
+    if (!g || !g.count) return '';
+    return `
+      <div class="segment ${active === key ? 'active' : ''}" data-group="${key}">
+        <div class="seg-head">${esc(cls)} · ${esc(g.title)}</div>
+        <div class="seg-count">${g.count} customers</div>
+        <div class="seg-meta">${g.sales_share}% of sales · ${compact.format(g.sales)}</div>
+        <div class="seg-meta">owes ${compact.format(g.total_open)} · ${compact.format(g.over_90_total)} over 90d</div>
+      </div>`;
+  }).join('');
+  $('segments').classList.toggle('hidden', !$('segments').innerHTML.trim());
+  $('segments').querySelectorAll('.segment').forEach((el) => {
+    el.addEventListener('click', () => {
+      $('f-group').value = $('f-group').value === el.dataset.group ? '' : el.dataset.group;
+      load();
+    });
   });
 }
 
@@ -872,13 +907,13 @@ function init() {
 
   const reload = debounce(load, 220);
   $('f-search').addEventListener('input', reload);
-  ['f-status', 'f-band', 'f-term', 'f-area', 'f-agency', 'f-min', 'f-owner',
+  ['f-status', 'f-band', 'f-term', 'f-area', 'f-group', 'f-agency', 'f-min', 'f-owner',
    'f-salesperson', 'f-hide-credits', 'f-hide-settled', 'f-due', 'f-overdue'].forEach((id) => {
     $(id).addEventListener('input', reload);
   });
   $('f-reset').addEventListener('click', () => {
     ['f-search', 'f-min', 'f-owner', 'f-salesperson'].forEach((id) => { $(id).value = ''; });
-    ['f-status', 'f-band', 'f-term', 'f-area', 'f-agency'].forEach((id) => { $(id).value = ''; });
+    ['f-status', 'f-band', 'f-term', 'f-area', 'f-group', 'f-agency'].forEach((id) => { $(id).value = ''; });
     ['f-hide-credits', 'f-due', 'f-overdue'].forEach((id) => { $(id).checked = false; });
     $('f-hide-settled').checked = true;
     state.minAgeFilter = 0;

@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import agency
 import aging
+import classification
 import collections_data
 import db
 import export
@@ -185,6 +186,51 @@ def as_of_of(params):
         except (TypeError, ValueError):
             pass
     return business_today()
+
+
+def attach_classification(conn, customers, company_id=None):
+    """Merges each customer's trailing-12m sales class/rank (classification.py)
+    onto its dict, from the sales_ttm table odoo_sync.fetch_sales_ttm fills on
+    every sync. Scoped to the same company as the receivables view, so
+    switching companies re-ranks buyers within just that company's book.
+    Customers with no rows in sales_ttm (or a net of zero) are Class D.
+    """
+    where, params = '', []
+    if company_id:
+        where, params = ' WHERE company_id = ?', [int(company_id)]
+    rows = conn.execute(
+        f'SELECT partner_id, SUM(amount) AS amount FROM sales_ttm{where} GROUP BY partner_id',
+        params,
+    ).fetchall()
+    ranked = classification.rank({r['partner_id']: r['amount'] or 0.0 for r in rows})
+    for c in customers:
+        info = ranked.get(c['partner_id'])
+        c.update(info or {'sales_12m': 0.0, 'sales_class': 'D',
+                          'sales_rank': None, 'sales_percentile': None})
+
+
+def group_of(customers, params):
+    """Filters to one sales-classification slice — a Class letter, or a
+    Top/Weakest percentile tier of buyers (Class D customers have no
+    percentile, so they never match a tier). Blank means every customer."""
+    group = params.get('group') or ''
+    if not group:
+        return customers
+    try:
+        if group.startswith('class_'):
+            letter = group[len('class_'):].upper()
+            return [c for c in customers if c.get('sales_class') == letter]
+        if group.startswith('top_'):
+            n = int(group[len('top_'):])
+            return [c for c in customers if c.get('sales_percentile') is not None
+                    and c['sales_percentile'] <= n]
+        if group.startswith('weak_'):
+            n = int(group[len('weak_'):])
+            return [c for c in customers if c.get('sales_percentile') is not None
+                    and c['sales_percentile'] > 100 - n]
+    except ValueError:
+        pass
+    return customers
 
 
 def filter_customers(customers, params, as_of=None):
@@ -485,6 +531,14 @@ class handler(BaseHTTPRequestHandler):
                 'basis': basis_of({}, conn),
                 'scheme': scheme_of({}, conn),
                 'schemes': [{'key': k, 'label': v['label']} for k, v in aging.SCHEMES.items()],
+                'groups': (
+                    [{'key': f'class_{c.lower()}', 'label': classification.CLASS_LABELS[c]}
+                     for c in classification.CLASSES]
+                    + [{'key': f'top_{n}', 'label': f'Top {n}% of buyers'}
+                       for n in classification.TOP_TIERS]
+                    + [{'key': f'weak_{n}', 'label': f'Weakest {n}%'}
+                       for n in classification.WEAK_TIERS]
+                ),
                 'statuses': [{'key': k, 'label': v} for k, v in db.STATUSES],
                 'has_data': db.has_data(conn),
                 'last_sync': dict(last) if last else None,
@@ -508,10 +562,11 @@ class handler(BaseHTTPRequestHandler):
                                              company_id=company,
                                              area=params.get('area') or None,
                                              basis=basis_of(params, conn), scheme=scheme)
+            attach_classification(conn, everything, company)
         finally:
             conn.close()
 
-        filtered = filter_customers(everything, params, as_of=as_of)
+        filtered = group_of(filter_customers(everything, params, as_of=as_of), params)
         settled = [c for c in everything if c.get('settled')]
         self._json({
             'customers': [{k: v for k, v in c.items() if k != 'documents'} for c in filtered],
@@ -525,6 +580,7 @@ class handler(BaseHTTPRequestHandler):
             'attention': attention_items(everything, as_of=as_of),
             'terms': term_summary(everything),
             'areas': area_summary(everything),
+            'segments': classification.segment_summary(everything),
             'salespeople': sorted({c['salesperson'] for c in everything if c.get('salesperson')}),
             'agency': {
                 'count': sum(1 for c in everything if c.get('agency')),
@@ -542,10 +598,12 @@ class handler(BaseHTTPRequestHandler):
             threshold = int(params.get('threshold') or current_threshold(conn))
             scope = scope_of(params, conn)
             scheme = scheme_of(params, conn)
+            company = company_of(params, conn)
             everything, _ = aging.build(conn, threshold, as_of=as_of_of(params), scope=scope,
-                                        company_id=company_of(params, conn),
+                                        company_id=company,
                                         area=params.get('area') or None,
                                         basis=basis_of(params, conn), scheme=scheme)
+            attach_classification(conn, everything, company)
             customer = next((c for c in everything if c['partner_id'] == partner_id), None)
             if customer is None:
                 return self._error(404, 'Customer has no items in the current view')
@@ -815,7 +873,8 @@ class handler(BaseHTTPRequestHandler):
                                              company_id=company,
                                              area=params.get('area') or None,
                                              basis=basis, scheme=scheme)
-            filtered = filter_customers(everything, params, as_of=as_of)
+            attach_classification(conn, everything, company)
+            filtered = group_of(filter_customers(everything, params, as_of=as_of), params)
             wb = export.build(filtered, recompute_totals(filtered, totals),
                               company_label(company, CONFIG),
                               CONFIG.get('currency', 'SAR'))

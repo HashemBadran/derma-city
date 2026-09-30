@@ -7,7 +7,7 @@ moving on their own between syncs instead of freezing at whatever the last sync 
 
 import re
 import xmlrpc.client
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import collections_data
 import db
@@ -62,6 +62,37 @@ def detect_name_en_field(odoo, say):
     else:
         say(f'  Using res.partner.{candidates[0]} as the Odoo-synced English name.')
     return candidates[0]
+
+
+def fetch_sales_ttm(odoo, company_ids, context, say):
+    """Net invoiced revenue per (customer, company) over the trailing 12
+    months from today — customer invoices minus customer credit notes, both
+    posted. Feeds the sales-based customer classification in classification.py;
+    entirely separate from the receivables ledger this module otherwise pulls,
+    so a customer can be current on everything they owe and still be a weak
+    buyer, or the reverse.
+    """
+    cutoff = (date.today() - timedelta(days=365)).isoformat()
+    domain = [
+        ('move_type', 'in', ['out_invoice', 'out_refund']),
+        ('state', '=', 'posted'),
+        ('invoice_date', '>=', cutoff),
+        ('company_id', 'in', company_ids),
+    ]
+    moves = _fetch_all(odoo, 'account.move', domain,
+                       ['partner_id', 'company_id', 'amount_total', 'move_type'], context)
+    totals = {}  # (partner_id, company_id) -> net amount
+    for m in moves:
+        if not m.get('partner_id'):
+            continue
+        pid = m['partner_id'][0]
+        cid = m['company_id'][0] if m.get('company_id') else 0
+        sign = -1 if m['move_type'] == 'out_refund' else 1
+        key = (pid, cid)
+        totals[key] = totals.get(key, 0.0) + sign * (m.get('amount_total') or 0.0)
+    say(f'  {len(moves)} invoices/credit notes since {cutoff} -> trailing-12-month sales '
+        f'for {len(totals)} customer/company pairs.')
+    return totals
 
 
 def term_days(label):
@@ -282,6 +313,9 @@ def sync(config, progress=None):
 
     collection_rows = collections_data.sync(odoo, config, progress)
 
+    say('Computing trailing 12-month sales for customer classification…')
+    sales_ttm = fetch_sales_ttm(odoo, company_ids, context, say)
+
     say('Writing to local database…')
     now = datetime.now().isoformat(timespec='seconds')
     conn = db.connect()
@@ -364,6 +398,12 @@ def sync(config, progress=None):
                 ' doc, ref, journal, inv_date, due_date, original, residual)'
                 ' VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                 document_rows,
+            )
+
+            conn.execute('DELETE FROM sales_ttm')
+            conn.executemany(
+                'INSERT INTO sales_ttm (partner_id, company_id, amount) VALUES (?,?,?)',
+                [(pid, cid, round(amount, 2)) for (pid, cid), amount in sales_ttm.items()],
             )
 
             residual = round(sum(l.get('amount_residual') or 0.0 for l in lines), 2)

@@ -80,6 +80,19 @@ CREATE INDEX IF NOT EXISTS idx_documents_partner ON documents(partner_id);
 CREATE INDEX IF NOT EXISTS idx_documents_due ON documents(due_date);
 CREATE INDEX IF NOT EXISTS idx_documents_company ON documents(company_id);
 
+-- Net invoiced revenue per customer per company over the trailing 12 months
+-- as of the last sync (see odoo_sync.py) -- entirely separate from what they
+-- owe above. A big spender can be current on every invoice, and a customer
+-- sitting on an old overdue balance may have bought nothing since. Wiped and
+-- rewritten on every sync, same as customers/documents.
+CREATE TABLE IF NOT EXISTS sales_ttm (
+    partner_id INTEGER NOT NULL,
+    company_id INTEGER NOT NULL DEFAULT 0,
+    amount     REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (partner_id, company_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sales_ttm_partner ON sales_ttm(partner_id);
+
 CREATE TABLE IF NOT EXISTS followups (
     partner_id       INTEGER PRIMARY KEY,
     status           TEXT NOT NULL DEFAULT 'new',
@@ -315,7 +328,7 @@ MIGRATIONS = {
 
 # Bump whenever SCHEMA or MIGRATIONS changes, so the next cold start after a
 # deploy re-runs init() once to pick it up.
-SCHEMA_VERSION = '4'
+SCHEMA_VERSION = '5'
 
 
 def init():

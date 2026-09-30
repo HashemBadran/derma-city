@@ -60,12 +60,17 @@
 
   <section class="attention hidden" id="attention"></section>
 
+  <section class="segments hidden" id="segments"></section>
+
   <section class="panel">
     <div class="filters">
       <input type="search" id="f-search" placeholder="Search customer or phone…" class="grow">
       <select id="f-status"><option value="">All statuses</option></select>
       <select id="f-band"><option value="">All age bands</option></select>
       <select id="f-area"><option value="">All areas</option></select>
+      <select id="f-group" title="Trailing 12-month sales class — separate from what a customer owes: a big spender can be current on everything, and a weak buyer can be sitting on an old balance.">
+        <option value="">All groups</option>
+      </select>
       <select id="f-agency" title="Customers handed to a collection agency — still owed, but not yours to chase">
         <option value="">Including agency customers</option>
         <option value="hide">Excluding agency customers</option>

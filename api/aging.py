@@ -153,7 +153,7 @@ BASES = ('due', 'invoice')
 # whichever basis happens to be selected, and the cutoff has to be exact
 # rather than snapped to whatever band scheme is active (its bands can be 90
 # days wide), so these are summed straight from each document's age.
-OVER_DAYS_MILESTONES = (180, 240, 360)
+OVER_DAYS_MILESTONES = (90, 180, 240, 360)
 
 
 def days_overdue(due_date, as_of=None):
