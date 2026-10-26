@@ -877,7 +877,11 @@ class handler(BaseHTTPRequestHandler):
             filtered = group_of(filter_customers(everything, params, as_of=as_of), params)
             wb = export.build(filtered, recompute_totals(filtered, totals),
                               company_label(company, CONFIG),
-                              CONFIG.get('currency', 'SAR'))
+                              CONFIG.get('currency', 'SAR'),
+                              # Only worth a column when the sheet can actually
+                              # mix companies — picking one company means every
+                              # row already has the same answer.
+                              show_company=not company and len(CONFIG['company_ids']) > 1)
             export.notes_sheet(wb, conn)
         finally:
             conn.close()
