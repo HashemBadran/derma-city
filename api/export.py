@@ -46,7 +46,7 @@ def _finish(ws, freeze, filter_ref=None):
     ws.page_setup.fitToWidth = 1
 
 
-def build(customers, totals, company_label, currency, show_company=False):
+def build(customers, totals, company_label, currency):
     bands = totals['bands']
     as_of = totals['as_of']
     threshold = totals['threshold']
@@ -69,16 +69,11 @@ def build(customers, totals, company_label, currency, show_company=False):
     ws.merge_cells('A2:M2')
 
     total_label = 'Total Open' if all_open else f'Total {threshold}+'
-    # Which company a row belongs to only earns its own column when the sheet
-    # can actually mix companies — a single-company export has one answer for
-    # every row, so the column would just repeat the title above it.
-    company_header = ['Company'] if show_company else []
-    company_width = [16] if show_company else []
-    headers = (['#'] + company_header + ['Customer', 'English Name', 'Agency', 'Phone', 'City',
-                                          'Area', 'Credit Terms', 'Docs', 'Oldest (days)']
+    headers = (['#', 'Company', 'Customer', 'English Name', 'Agency', 'Phone', 'City',
+                'Area', 'Credit Terms', 'Docs', 'Oldest (days)']
                + bands + [total_label, 'Overdue Portion', 'Total Balance',
                           'Status', 'Owner', 'Promise Date', 'Next Action', 'Notes'])
-    widths = ([5] + company_width + [44, 30, 10, 18, 14, 13, 15, 8, 14] + [16] * len(bands)
+    widths = ([5, 16, 44, 30, 10, 18, 14, 13, 15, 8, 14] + [16] * len(bands)
               + [18, 18, 18, 17, 16, 14, 14, 8])
     _header(ws, 4, headers, widths)
 
@@ -86,9 +81,8 @@ def build(customers, totals, company_label, currency, show_company=False):
     for idx, c in enumerate(customers, start=1):
         col = 1
         ws.cell(row=r, column=col, value=idx).alignment = Alignment(horizontal='center'); col += 1
-        if show_company:
-            ws.cell(row=r, column=col, value=c.get('company') or '').alignment = \
-                Alignment(horizontal='center'); col += 1
+        ws.cell(row=r, column=col, value=c.get('company') or '').alignment = \
+            Alignment(horizontal='center'); col += 1
         ws.cell(row=r, column=col, value=c['name']).alignment = Alignment(horizontal='right'); col += 1
         ws.cell(row=r, column=col, value=c.get('name_en') or ''); col += 1
         ag = ws.cell(row=r, column=col, value='Agency' if c.get('agency') else '')
@@ -156,12 +150,11 @@ def build(customers, totals, company_label, currency, show_company=False):
             ws.cell(row=r, column=j).border = BORDER
         r += 1
 
-    shift = 1 if show_company else 0
-    NAME_COL = 2 + shift
+    NAME_COL = 3
     lbl = ws.cell(row=r, column=NAME_COL, value=f'TOTAL — {totals["customers"]} customers')
     lbl.font, lbl.fill = Font(bold=True, size=11), TOT_FILL
     lbl.alignment = Alignment(horizontal='right')
-    DOCS_COL, FIRST_BAND_COL = 9 + shift, 11 + shift
+    DOCS_COL, FIRST_BAND_COL = 10, 12
     ws.cell(row=r, column=DOCS_COL, value=totals['documents']).alignment = \
         Alignment(horizontal='center')
     col = FIRST_BAND_COL
