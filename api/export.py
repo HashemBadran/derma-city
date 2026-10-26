@@ -74,11 +74,11 @@ def build(customers, totals, company_label, currency, show_company=False):
     # every row, so the column would just repeat the title above it.
     company_header = ['Company'] if show_company else []
     company_width = [16] if show_company else []
-    headers = (['#', 'Customer', 'English Name'] + company_header
-               + ['Agency', 'Phone', 'City', 'Area', 'Credit Terms', 'Docs', 'Oldest (days)']
+    headers = (['#'] + company_header + ['Customer', 'English Name', 'Agency', 'Phone', 'City',
+                                          'Area', 'Credit Terms', 'Docs', 'Oldest (days)']
                + bands + [total_label, 'Overdue Portion', 'Total Balance',
                           'Status', 'Owner', 'Promise Date', 'Next Action', 'Notes'])
-    widths = ([5, 44, 30] + company_width + [10, 18, 14, 13, 15, 8, 14] + [16] * len(bands)
+    widths = ([5] + company_width + [44, 30, 10, 18, 14, 13, 15, 8, 14] + [16] * len(bands)
               + [18, 18, 18, 17, 16, 14, 14, 8])
     _header(ws, 4, headers, widths)
 
@@ -86,11 +86,11 @@ def build(customers, totals, company_label, currency, show_company=False):
     for idx, c in enumerate(customers, start=1):
         col = 1
         ws.cell(row=r, column=col, value=idx).alignment = Alignment(horizontal='center'); col += 1
-        ws.cell(row=r, column=col, value=c['name']).alignment = Alignment(horizontal='right'); col += 1
-        ws.cell(row=r, column=col, value=c.get('name_en') or ''); col += 1
         if show_company:
             ws.cell(row=r, column=col, value=c.get('company') or '').alignment = \
                 Alignment(horizontal='center'); col += 1
+        ws.cell(row=r, column=col, value=c['name']).alignment = Alignment(horizontal='right'); col += 1
+        ws.cell(row=r, column=col, value=c.get('name_en') or ''); col += 1
         ag = ws.cell(row=r, column=col, value='Agency' if c.get('agency') else '')
         ag.alignment = Alignment(horizontal='center')
         if c.get('agency'):
@@ -156,10 +156,11 @@ def build(customers, totals, company_label, currency, show_company=False):
             ws.cell(row=r, column=j).border = BORDER
         r += 1
 
-    lbl = ws.cell(row=r, column=2, value=f'TOTAL — {totals["customers"]} customers')
+    shift = 1 if show_company else 0
+    NAME_COL = 2 + shift
+    lbl = ws.cell(row=r, column=NAME_COL, value=f'TOTAL — {totals["customers"]} customers')
     lbl.font, lbl.fill = Font(bold=True, size=11), TOT_FILL
     lbl.alignment = Alignment(horizontal='right')
-    shift = 1 if show_company else 0
     DOCS_COL, FIRST_BAND_COL = 9 + shift, 11 + shift
     ws.cell(row=r, column=DOCS_COL, value=totals['documents']).alignment = \
         Alignment(horizontal='center')
@@ -176,7 +177,7 @@ def build(customers, totals, company_label, currency, show_company=False):
     tb.number_format, tb.font, tb.fill = MONEY, Font(bold=True), TOT_FILL
     for j in range(1, len(headers) + 1):
         ws.cell(row=r, column=j).border = BORDER
-        if j < FIRST_BAND_COL and j != 2:
+        if j < FIRST_BAND_COL and j != NAME_COL:
             ws.cell(row=r, column=j).fill = TOT_FILL
     _finish(ws, 'A5', f'A4:{get_column_letter(len(headers))}{r - 1}')
 
