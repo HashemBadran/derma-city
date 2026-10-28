@@ -199,7 +199,16 @@ def visible_band_ranges(threshold, scope='aged', scheme=DEFAULT_SCHEME):
     for i, (lo, hi, label) in enumerate(bands):
         if i == 0 and lo < threshold:
             lo = threshold
-            label = f'{threshold}-{hi}' if hi is not None else f'{threshold}+'
+            # hi == threshold is the edge case where the threshold lands
+            # exactly on a band's own ceiling (e.g. threshold=90 against the
+            # standard ladder's 61-90 band): clamping the floor up to it
+            # would otherwise relabel a real range as a degenerate "90-90".
+            if hi is None:
+                label = f'{threshold}+'
+            elif hi == threshold:
+                label = f'{threshold}'
+            else:
+                label = f'{threshold}-{hi}'
         out.append((label, lo, hi))
     return out
 
