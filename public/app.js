@@ -1271,9 +1271,10 @@ function renderReceipts() {
       <td class="left">${r.invoice ? esc(r.invoice)
         : '<span class="note-count">unapplied</span>'}</td>
       <td class="left">${esc(r.journal)}</td>
+      <td>${r.age_days != null ? `${r.age_days}d` : '—'}</td>
       <td>${fmt(r.amount)}</td>
     </tr>`).join('')
-    : '<tr><td colspan="8" class="left"><span class="note-count">No receipts match these filters.</span></td></tr>';
+    : '<tr><td colspan="9" class="left"><span class="note-count">No receipts match these filters.</span></td></tr>';
 
   const from = d.total ? coll.receiptsOffset + 1 : 0;
   const to = Math.min(coll.receiptsOffset + RECEIPTS_PAGE, d.total);

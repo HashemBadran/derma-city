@@ -414,7 +414,10 @@ def receipts(conn, filters, limit=400, offset=0):
     total = conn.execute(f'SELECT COUNT(*) AS n FROM collections_effective{w}', p).fetchone()['n']
     rows = [dict(r) for r in conn.execute(
         'SELECT date, doc, ref, journal, customer, area, invoice, invoice_date,'
-        '       salesperson, applied, amount'
+        '       salesperson, applied, amount,'
+        "       CASE WHEN applied AND invoice_date != '' THEN"
+        '         CAST(julianday(date) - julianday(invoice_date) AS INTEGER)'
+        '         ELSE NULL END AS age_days'
         f'  FROM collections_effective{w} ORDER BY date DESC, line_id DESC LIMIT ? OFFSET ?',
         p + [int(limit), int(offset)])]
     return {'rows': rows, 'total': total}
