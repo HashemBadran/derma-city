@@ -272,7 +272,10 @@ def filter_customers(customers, params, as_of=None):
             continue
         if hide_credits and c['aged_total'] <= 0:
             continue
-        if hide_settled and c.get('settled'):
+        # A search is someone looking for one specific customer by name/phone —
+        # "Hide settled" exists to cut noise from the general list, not to hide
+        # the very record being searched for.
+        if hide_settled and c.get('settled') and not q:
             continue
         if agency_mode == 'hide' and c.get('agency'):
             continue
