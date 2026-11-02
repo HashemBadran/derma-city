@@ -929,7 +929,12 @@ init();
 
 // =================================================================== collections
 
-const coll = { data: null, sort: { key: 'total', dir: -1 }, receiptsOffset: 0 };
+const coll = {
+  data: null, sort: { key: 'total', dir: -1 }, receiptsOffset: 0,
+  ageData: null,
+  ageSalesperson: '', // the invoice-age card's own salesperson lens — independent of c-user
+  ageBand: null,      // {low, high, label} of the clicked band, or null
+};
 const RECEIPTS_PAGE = 100;
 
 function cFilters() {
@@ -1023,13 +1028,101 @@ function cBarTable(rows, total, onClick) {
     </tr>`).join('')}</table>`;
 }
 
+/** "By Invoice Age" card: how old each invoice was, from its invoice date, on
+ * the day its money arrived — the same bands aging.py uses on the
+ * receivables page. Its salesperson dropdown is deliberately separate from
+ * the page's own (see cAgeFilters) — a read-only lens on this card's numbers
+ * only. Clicking a band scopes the receipts list below to that age range
+ * instead (see loadReceipts/cFilters' age_min/age_max). */
+function renderInvoiceAge() {
+  const el = $('c-invoice-age');
+  if (!el) return;
+  const age = coll.ageData;
+  const people = (coll.data && coll.data.facets && coll.data.facets.salespeople) || [];
+  const dropdown = `
+    <select id="c-age-user" title="Limit this card to one salesperson — independent of the page's main salesperson filter above">
+      <option value="">All salespeople</option>
+      ${people.map((s) => `<option value="${esc(s.id)}" ${
+        String(s.id) === coll.ageSalesperson ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+    </select>`;
+  if (!age || !age.rows.length) {
+    el.innerHTML = `<div class="card-sub">${dropdown}</div><p class="empty">Nothing to show.</p>`;
+    $('c-age-user').addEventListener('change', (ev) => {
+      coll.ageSalesperson = ev.target.value;
+      refreshInvoiceAge();
+    });
+    return;
+  }
+  const max = Math.max(...age.rows.map((r) => r.amount), 1);
+  const activeKey = coll.ageBand ? coll.ageBand.band : null;
+  el.innerHTML = `
+    <div class="card-sub">how old each invoice was, from its invoice date, on the day its money
+      arrived — the same bands as the receivables page
+      ${age.avg_days != null ? ` · <b>${age.avg_days} days</b> from invoice to cash on average,
+      weighted by amount` : ''} · click a band to filter the view</div>
+    <div class="card-sub">${dropdown}</div>
+    <table class="bartable">${age.rows.map((r, i) => `
+      <tr ${r.band ? `data-band="${esc(r.band)}" data-low="${r.low}" data-high="${r.high ?? ''}"` : ''}
+          class="${r.band && activeKey === r.band ? 'active' : ''} ${!r.band ? 'muted' : ''}">
+        <td class="rank">${i + 1}</td>
+        <td class="lbl">${esc(r.label)}</td>
+        <td class="barcell"><div class="track">
+          <div class="fill" style="width:${(r.amount / max) * 100}%"></div></div></td>
+        <td class="val">${fmt(r.amount)}</td>
+        <td class="pct">${r.share}%</td>
+      </tr>`).join('')}</table>`;
+  $('c-age-user').addEventListener('change', (ev) => {
+    coll.ageSalesperson = ev.target.value;
+    refreshInvoiceAge();
+  });
+  el.querySelectorAll('tr[data-band]').forEach((tr) => {
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', () => {
+      const band = tr.dataset.band;
+      const high = tr.dataset.high === '' ? null : Number(tr.dataset.high);
+      coll.ageBand = coll.ageBand && coll.ageBand.band === band
+        ? null : { band, low: Number(tr.dataset.low), high };
+      renderInvoiceAge();
+      loadReceipts();
+      $('c-receipts-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
+/** The "By Invoice Age" card's own filter set — the page's other filters
+ * (date range, area, journal...) apply, but `user_id` comes from the card's
+ * own salesperson dropdown instead of the page's, since the two are
+ * deliberately independent lenses. */
+function cAgeFilters() {
+  const p = cFilters();
+  p.delete('user_id');
+  if (coll.ageSalesperson) p.set('user_id', coll.ageSalesperson);
+  return p;
+}
+
+async function fetchInvoiceAge() {
+  return (await fetch('/api/collections/invoice_age?' + cAgeFilters())).json();
+}
+
+/** Re-fetches and re-renders just the invoice-age card — used when its own
+ * salesperson dropdown changes, so picking a salesperson there doesn't
+ * reload the whole page the way the main filters do. */
+async function refreshInvoiceAge() {
+  coll.ageData = await fetchInvoiceAge();
+  renderInvoiceAge();
+}
+
 async function loadCollections() {
   coll.receiptsOffset = 0;
   const p = cFilters();
   $('c-export').href = '/api/collections/export.xlsx?' + p;
-  const d = await (await fetch('/api/collections?' + p)).json();
+  const [d, age] = await Promise.all([
+    fetch('/api/collections?' + p).then((r) => r.json()),
+    fetchInvoiceAge(),
+  ]);
   if (d.error) { banner(d.error, true); return; }
   coll.data = d;
+  coll.ageData = age;
   loadReceipts();
 
   const f = d.facets || {};
@@ -1087,6 +1180,10 @@ async function loadCollections() {
       <div class="card-sub">${state.boot.currency} · ${t.first_date || ''} → ${t.last_date || ''}</div>
       ${dailyChart(d.daily)}
     </div>
+    <div class="card">
+      <h3>By invoice age</h3>
+      <div id="c-invoice-age"></div>
+    </div>
     <div class="cards2">
       <div class="card">
         <h3>By salesperson</h3>
@@ -1116,6 +1213,8 @@ async function loadCollections() {
       </div>
     </div>`;
 
+  renderInvoiceAge();
+
   document.querySelectorAll('[data-ctip]').forEach((el) => {
     el.addEventListener('mousemove', (ev) => cTip.show(el.dataset.ctip, ev));
     el.addEventListener('mouseleave', () => cTip.hide());
@@ -1139,6 +1238,12 @@ async function loadReceipts() {
   const p = cFilters();
   p.set('limit', RECEIPTS_PAGE);
   p.set('offset', coll.receiptsOffset);
+  // The clicked age band scopes only the receipts list, not the page's other
+  // totals/breakdowns — see renderInvoiceAge.
+  if (coll.ageBand) {
+    p.set('age_min', coll.ageBand.low);
+    if (coll.ageBand.high != null) p.set('age_max', coll.ageBand.high);
+  }
   const d = await (await fetch('/api/collections/receipts?' + p)).json();
   coll.receiptsData = d;
   renderReceipts();
@@ -1148,8 +1253,13 @@ function renderReceipts() {
   const d = coll.receiptsData;
   if (!d) return;
   const salesperson = $('c-user').value;
-  $('c-receipts-title').textContent = salesperson ? `Receipts — ${salesperson}` : 'Receipts';
-  $('c-receipts-clear').classList.toggle('hidden', !salesperson);
+  const bits = [];
+  if (salesperson) bits.push(salesperson);
+  if (coll.ageBand) bits.push(coll.ageBand.high != null
+    ? `${coll.ageBand.low}–${coll.ageBand.high}d old`
+    : `${coll.ageBand.low}d+ old`);
+  $('c-receipts-title').textContent = bits.length ? `Receipts — ${bits.join(' · ')}` : 'Receipts';
+  $('c-receipts-clear').classList.toggle('hidden', !bits.length);
 
   $('c-receipts-body').innerHTML = d.rows.length ? d.rows.map((r) => `
     <tr>
@@ -1280,13 +1390,22 @@ function switchView(view) {
       loadCollections();
     }));
   $('c-receipts-clear').addEventListener('click', () => {
+    const hadSalesperson = $('c-user').value;
     $('c-user').value = '';
-    loadCollections();
+    coll.ageBand = null;
+    if (hadSalesperson) {
+      loadCollections();
+    } else {
+      renderInvoiceAge();
+      loadReceipts();
+    }
   });
   $('c-reset').addEventListener('click', () => {
     ['c-q', 'c-user', 'c-journal', 'c-area', 'c-agency', 'c-applied']
       .forEach((id) => { $(id).value = ''; });
     $('c-basis').value = '';
+    coll.ageSalesperson = '';
+    coll.ageBand = null;
     cPreset('all');
     loadCollections();
   });

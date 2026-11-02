@@ -21,6 +21,7 @@ import xmlrpc.client
 from collections import defaultdict
 from datetime import datetime
 
+import aging
 import db
 
 UNAPPLIED = '(unapplied)'
@@ -274,6 +275,18 @@ def where(filters):
         clauses.append('(customer LIKE ? OR salesperson LIKE ? OR doc LIKE ?'
                        ' OR ref LIKE ? OR invoice LIKE ?)')
         params.extend([term] * 5)
+    # Days from invoice date to the receipt's own date — how the "By Invoice
+    # Age" breakdown's click-to-filter scopes the receipts list. A receipt
+    # with no invoice_date (unapplied) has no age to measure, so it can never
+    # match either bound.
+    if filters.get('age_min') is not None or filters.get('age_max') is not None:
+        clauses.append("invoice_date != ''")
+        if filters.get('age_min') is not None:
+            clauses.append('(julianday(date) - julianday(invoice_date)) >= ?')
+            params.append(int(filters['age_min']))
+        if filters.get('age_max') is not None:
+            clauses.append('(julianday(date) - julianday(invoice_date)) <= ?')
+            params.append(int(filters['age_max']))
     return (' WHERE ' + ' AND '.join(clauses)) if clauses else '', params
 
 
@@ -319,6 +332,77 @@ def breakdown(conn, filters, dim, limit=None):
     for r in rows:
         r['total'] = r['total'] or 0.0
     return rows
+
+
+def invoice_age_breakdown(conn, filters, scheme=None):
+    """How old each invoice was, from its invoice date, on the day its money
+    arrived — bucketed into the same aging bands the receivables page uses
+    (aging.py), weighted by amount. A receipt not yet matched to an invoice
+    (or missing an invoice date for any other reason) has no age to measure,
+    so it gets its own "(unapplied)" row instead of a band rather than being
+    dropped — the rows always add up to the total collected.
+
+    Unlike `breakdown`, this reads every matching row into Python rather than
+    grouping in SQL: the banding logic already lives in aging.py (band_for),
+    and duplicating a date-bucketing CASE expression in SQL here would be two
+    places to keep in sync with the receivables page's own ladders.
+    """
+    scheme = scheme if scheme in aging.SCHEMES else aging.DEFAULT_SCHEME
+    ladder = aging.SCHEMES[scheme]['ladder']
+    w, p = where(filters)
+    rows = conn.execute(
+        f'SELECT date, invoice_date, amount, applied FROM collections_effective{w}', p
+    ).fetchall()
+
+    band_totals = {}
+    unapplied = 0.0
+    weighted_days = 0.0
+    weighted_amount = 0.0
+    for r in rows:
+        amt = r['amount'] or 0.0
+        inv_date = r['invoice_date']
+        if not r['applied'] or not inv_date:
+            unapplied += amt
+            continue
+        try:
+            days = (aging.parse_date(r['date']) - aging.parse_date(inv_date)).days
+        except (TypeError, ValueError):
+            unapplied += amt
+            continue
+        band = aging.band_for(days, scheme)
+        band_totals[band] = band_totals.get(band, 0.0) + amt
+        weighted_days += days * amt
+        weighted_amount += amt
+
+    grand = sum(band_totals.values()) + unapplied
+    # Youngest first, same order as the receivables page's own bands — and
+    # only bands with money in them, rather than padding the list with zeros.
+    band_ranges = aging.visible_band_ranges(1, 'all', scheme)
+    rows_out = []
+    for label, lo, hi in band_ranges:
+        amt = band_totals.get(label)
+        if not amt:
+            continue
+        rows_out.append({
+            'band': label,
+            'low': lo, 'high': hi,
+            'label': aging.band_label(label, scheme),
+            'amount': round(amt, 2),
+            'share': round(amt / grand * 100, 1) if grand else 0,
+        })
+    if unapplied:
+        rows_out.append({
+            'band': None, 'low': None, 'high': None,
+            'label': '(unapplied) — not yet matched to an invoice',
+            'amount': round(unapplied, 2),
+            'share': round(unapplied / grand * 100, 1) if grand else 0,
+        })
+    return {
+        'rows': rows_out,
+        'total': round(grand, 2),
+        'avg_days': round(weighted_days / weighted_amount, 1) if weighted_amount else None,
+        'scheme': scheme,
+    }
 
 
 def daily(conn, filters):

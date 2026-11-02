@@ -455,6 +455,8 @@ class handler(BaseHTTPRequestHandler):
                 return self.api_collections(params)
             if path == '/api/collections/breakdown':
                 return self.api_collections_breakdown(params)
+            if path == '/api/collections/invoice_age':
+                return self.api_collections_invoice_age(params)
             if path == '/api/collections/receipts':
                 return self.api_collections_receipts(params)
             if path == '/api/collections/export.xlsx':
@@ -631,7 +633,8 @@ class handler(BaseHTTPRequestHandler):
     # ---------------------------------------------------------- collections
     def _collection_filters(self, params):
         keys = ('date_from', 'date_to', 'user_id', 'partner_id', 'journal',
-                'applied', 'basis', 'q', 'company_id', 'area', 'agency')
+                'applied', 'basis', 'q', 'company_id', 'area', 'agency',
+                'age_min', 'age_max')
         out = {k: params[k] for k in keys if params.get(k)}
         if 'company_id' not in out:
             conn = db.connect()
@@ -670,6 +673,19 @@ class handler(BaseHTTPRequestHandler):
             self._json({'dim': dim,
                         'rows': collections_data.breakdown(conn, f, dim),
                         'totals': collections_data.totals(conn, f)})
+        finally:
+            conn.close()
+
+    def api_collections_invoice_age(self, params):
+        """A separate endpoint, not folded into api_collections, because the
+        "By Invoice Age" card has its own salesperson dropdown — independent
+        of the page's main one — so the frontend fetches it with its own
+        filter set rather than sharing the one big payload."""
+        f = self._collection_filters(params)
+        conn = db.connect()
+        try:
+            scheme = scheme_of(params, conn)
+            self._json(collections_data.invoice_age_breakdown(conn, f, scheme))
         finally:
             conn.close()
 
